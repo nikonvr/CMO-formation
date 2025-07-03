@@ -1363,8 +1363,8 @@ def run_tolerance_analysis_wrapper(container):
                 l_min_plot, l_max_plot = get_lambda_range_from_targets(active_targets)
                 l_vec = np.geomspace(l_min_plot, l_max_plot, 100)
                 
-                std_devs_abs = [0, 0.2, 0.5, 1, 2, 3, 5]
-                std_devs_rel = [0, 1, 2, 3, 5, 10]
+                std_devs_abs = np.linspace(0, 5, 15)
+                std_devs_rel = np.linspace(0, 10, 15)
                 num_draws = 100
                 
                 plausible_rmses_abs = []
@@ -1749,7 +1749,7 @@ with main_layout[1]:
             color1 = 'tab:blue'
             ax1.set_xlabel('Écart-type absolu (nm)', color=color1)
             ax1.set_ylabel('RMSE Plausible (80%)', color=color1)
-            ax1.plot(tol_data['std_devs_abs'], tol_data['plausible_rmses_abs'], color=color1, marker='o', label='Erreur Absolue')
+            ax1.plot(tol_data['std_devs_abs'], tol_data['plausible_rmses_abs'], color=color1, marker='o', linewidth=2.5, label='Erreur Absolue')
             ax1.tick_params(axis='x', labelcolor=color1)
             ax1.tick_params(axis='y', labelcolor=color1)
             ax1.grid(True, linestyle=':', color=color1, alpha=0.5)
@@ -1757,7 +1757,7 @@ with main_layout[1]:
             ax2 = ax1.twiny()
             color2 = 'tab:orange'
             ax2.set_xlabel('Écart-type relatif (%)', color=color2)
-            ax2.plot(tol_data['std_devs_rel'], tol_data['plausible_rmses_rel'], color=color2, marker='x', label='Erreur Relative')
+            ax2.plot(tol_data['std_devs_rel'], tol_data['plausible_rmses_rel'], color=color2, marker='x', linewidth=2.5, label='Erreur Relative')
             ax2.tick_params(axis='x', labelcolor=color2)
             
             fig.tight_layout()
