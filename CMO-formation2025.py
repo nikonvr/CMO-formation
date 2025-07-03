@@ -763,6 +763,7 @@ def clear_optimized_state():
     st.session_state.ep_history = deque(maxlen=5)
     st.session_state.optimized_qwot_str = ""
     st.session_state.last_rmse = None
+    st.session_state.monte_carlo_results = None
 
 def set_optimized_as_nominal_wrapper():
     if not st.session_state.get('is_optimized_state') or st.session_state.get('optimized_ep') is None:
@@ -1306,26 +1307,15 @@ def run_monte_carlo_wrapper(container):
                 # Calculate confidence interval
                 lower_bound = np.percentile(all_ts_results, 10, axis=0)
                 upper_bound = np.percentile(all_ts_results, 90, axis=0)
-
-                # Plotting
-                fig, ax = plt.subplots(figsize=(12, 5))
-                ax.plot(l_vec, base_results['res_fine']['Ts'], color='red', linewidth=2, label='Réponse Idéale', zorder=3)
                 
-                # Scatter plot for all runs
-                ax.scatter(np.tile(l_vec, num_draws), all_ts_results.flatten(), color='lightgray', alpha=0.2, s=2, zorder=1)
-
-                # Confidence interval corridor
-                ax.fill_between(l_vec, lower_bound, upper_bound, color='blue', alpha=0.3, label='Intervalle de confiance à 80%', zorder=2)
-                
-                ax.set_xlabel("Wavelength (nm)")
-                ax.set_ylabel("Transmittance")
-                ax.set_title(f"Simulation de Monte-Carlo (100 tirages, Écart-type: {std_dev} nm)")
-                ax.legend()
-                ax.grid(True, linestyle=':')
-                if not st.session_state.get('auto_scale_y', False):
-                    ax.set_ylim(-0.05, 1.05)
-                st.pyplot(fig)
-                plt.close(fig)
+                st.session_state.monte_carlo_results = {
+                    'l_vec': l_vec,
+                    'all_ts_results': all_ts_results,
+                    'base_ts': base_results['res_fine']['Ts'],
+                    'lower_bound': lower_bound,
+                    'upper_bound': upper_bound,
+                    'std_dev': std_dev
+                }
                 add_log("Monte Carlo simulation finished.")
 
             except Exception as e:
@@ -1347,6 +1337,7 @@ if 'init_done' not in st.session_state:
     st.session_state.needs_rerun_calc = False
     st.session_state.rerun_calc_params = {}
     st.session_state.action = None
+    st.session_state.monte_carlo_results = None
 
     st.session_state.l0 = 500.0
     st.session_state.l_step = 10.0
@@ -1619,6 +1610,23 @@ with main_layout[1]:
         if st.button("Lancer la simulation", key="run_mc"):
             st.session_state.action = 'monte_carlo'
             st.rerun()
+        
+        if 'monte_carlo_results' in st.session_state and st.session_state.monte_carlo_results:
+            mc_data = st.session_state.monte_carlo_results
+            fig, ax = plt.subplots(figsize=(12, 5))
+            ax.plot(mc_data['l_vec'], mc_data['base_ts'], color='red', linewidth=2, label='Réponse Idéale', zorder=3)
+            ax.scatter(np.tile(mc_data['l_vec'], 100), mc_data['all_ts_results'].flatten(), color='lightgray', alpha=0.2, s=2, zorder=1)
+            ax.fill_between(mc_data['l_vec'], mc_data['lower_bound'], mc_data['upper_bound'], color='blue', alpha=0.3, label='Intervalle de confiance à 80%', zorder=2)
+            ax.set_xlabel("Wavelength (nm)")
+            ax.set_ylabel("Transmittance")
+            ax.set_title(f"Simulation de Monte-Carlo (100 tirages, Écart-type: {mc_data['std_dev']} nm)")
+            ax.legend()
+            ax.grid(True, linestyle=':')
+            if not st.session_state.get('auto_scale_y', False):
+                ax.set_ylim(-0.05, 1.05)
+            st.pyplot(fig)
+            plt.close(fig)
+
 
     with logs_tab:
         st.subheader("Logs")
