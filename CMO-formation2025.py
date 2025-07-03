@@ -17,7 +17,7 @@ from collections import deque
 MIN_THICKNESS_PHYS_NM = 0.01
 BASE_NEEDLE_THICKNESS_NM = 0.1
 DEFAULT_NEEDLE_SCAN_STEP_NM = 2.0
-AUTO_NEEDLES_PER_CYCLE = 3
+AUTO_NEEDLES_PER_CYCLE = 1 # Changed for single needle cycle
 AUTO_MAX_CYCLES = 3
 MSE_IMPROVEMENT_TOLERANCE = 1e-9
 MAXITER_HARDCODED = 1000
@@ -332,112 +332,9 @@ def calculate_mse_for_optimization_penalized_jax(ep_vector: jnp.ndarray,
     final_cost = mse + penalty_cost
     return jnp.nan_to_num(final_cost, nan=jnp.inf, posinf=jnp.inf)
 
-def update_progress_plots(ep_vector: np.ndarray, validated_inputs: Dict, active_targets: List[Dict], placeholders: Dict, iter_num: int):
-    l_min_plot = validated_inputs['l_range_deb']
-    l_max_plot = validated_inputs['l_range_fin']
-    nH_mat = validated_inputs['nH_material']
-    nL_mat = validated_inputs['nL_material']
-    nSub_mat = validated_inputs['nSub_material']
-    l0_plot = validated_inputs['l0']
-
-    num_plot_points = 401
-    l_vec_plot = np.linspace(l_min_plot, l_max_plot, num_plot_points)
-    results_fine, _ = calculate_T_from_ep_jax(ep_vector, nH_mat, nL_mat, nSub_mat, l_vec_plot)
-    
-    mse = None
-    if active_targets:
-        num_pts_mse = 100
-        l_vec_mse = np.geomspace(l_min_plot, l_max_plot, num_pts_mse)
-        results_mse_grid, _ = calculate_T_from_ep_jax(ep_vector, nH_mat, nL_mat, nSub_mat, l_vec_mse)
-        if results_mse_grid:
-            mse, _ = calculate_final_mse(results_mse_grid, active_targets)
-
-    placeholders['status'].markdown(f"**Iteration: {iter_num}** | **MSE: {mse:.4e if mse is not None else 'N/A'}**")
-
-    fig_spec, ax_spec = plt.subplots(figsize=(12, 4))
-    try:
-        if results_fine and 'l' in results_fine and 'Ts' in results_fine and results_fine['l'] is not None and len(results_fine['l']) > 0:
-            res_l_plot = np.asarray(results_fine['l'])
-            res_ts_plot = np.asarray(results_fine['Ts'])
-            ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
-            plotted_target_label = False
-            if active_targets:
-                for i, target in enumerate(active_targets):
-                    l_min, l_max, t_min, t_max_corr = target['min'], target['max'], target['target_min'], target['target_max']
-                    x_coords, y_coords = [l_min, l_max], [t_min, t_max_corr]
-                    label = 'Target(s)' if not plotted_target_label else "_nolegend_"
-                    ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
-                    plotted_target_label = True
-        ax_spec.set_xlabel("Wavelength (nm)")
-        ax_spec.set_ylabel('Transmittance')
-        ax_spec.grid(True, which='both', linestyle=':')
-        ax_spec.set_xlim(l_min_plot, l_max_plot)
-        if not st.session_state.get('auto_scale_y', False):
-            ax_spec.set_ylim(-0.05, 1.05)
-        ax_spec.legend(fontsize=8)
-        ax_spec.set_title(f"Réponse spectrale (Itération {iter_num})", fontsize=10)
-    except Exception as e:
-        ax_spec.text(0.5, 0.5, f"Erreur de tracé:\n{e}", ha='center', va='center')
-    plt.tight_layout()
-    placeholders['spec'].pyplot(fig_spec)
-    plt.close(fig_spec)
-
-    fig_idx, ax_idx = plt.subplots(figsize=(6, 4))
-    try:
-        nH_c_repr, _ = _get_nk_at_lambda(nH_mat, l0_plot)
-        nL_c_repr, _ = _get_nk_at_lambda(nL_mat, l0_plot)
-        nSub_c_repr, _ = _get_nk_at_lambda(nSub_mat, l0_plot)
-        nH_r_repr, nL_r_repr, nSub_r_repr = nH_c_repr.real, nL_c_repr.real, nSub_c_repr.real
-        num_layers = len(ep_vector)
-        n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)]
-        ep_cumulative = np.cumsum(ep_vector) if num_layers > 0 else np.array([0])
-        total_thickness = ep_cumulative[-1] if num_layers > 0 else 0
-        margin = max(50, 0.1 * total_thickness) if total_thickness > 0 else 50
-        x_coords_plot, y_coords_plot = [-margin], [nSub_r_repr]
-        if num_layers > 0:
-            x_coords_plot.append(0); y_coords_plot.append(nSub_r_repr)
-            for i in range(num_layers):
-                layer_start = ep_cumulative[i-1] if i > 0 else 0
-                layer_end = ep_cumulative[i]
-                x_coords_plot.extend([layer_start, layer_end]); y_coords_plot.extend([n_real_layers_repr[i], n_real_layers_repr[i]])
-            x_coords_plot.extend([ep_cumulative[-1], ep_cumulative[-1] + margin]); y_coords_plot.extend([1.0, 1.0])
-        else:
-            x_coords_plot.extend([0, 0, margin]); y_coords_plot.extend([nSub_r_repr, 1.0, 1.0])
-        ax_idx.plot(x_coords_plot, y_coords_plot, drawstyle='steps-post', color='purple')
-        ax_idx.set_xlabel('Profondeur (nm)'); ax_idx.set_ylabel("n'")
-        ax_idx.set_title(f"Profil d'indice (It. {iter_num})", fontsize=10)
-        ax_idx.grid(True, linestyle=':')
-    except Exception as e:
-        ax_idx.text(0.5, 0.5, f"Erreur de tracé:\n{e}", ha='center', va='center')
-    plt.tight_layout()
-    placeholders['idx'].pyplot(fig_idx)
-    plt.close(fig_idx)
-
-    fig_stack, ax_stack = plt.subplots(figsize=(6, 4))
-    try:
-        num_layers = len(ep_vector)
-        if num_layers > 0:
-            layer_types = ["H" if i % 2 == 0 else "L" for i in range(num_layers)]
-            colors = ['lightblue' if i % 2 == 0 else 'lightcoral' for i in range(num_layers)]
-            bar_pos = np.arange(num_layers)
-            ax_stack.barh(bar_pos, ep_vector, align='center', color=colors, edgecolor='grey')
-            ax_stack.set_yticks(bar_pos); ax_stack.set_yticklabels([f"L{i+1} ({t})" for i, t in enumerate(layer_types)], fontsize=7)
-            ax_stack.invert_yaxis()
-        else:
-            ax_stack.text(0.5, 0.5, "Structure Vide", ha='center', va='center')
-        ax_stack.set_xlabel('Épaisseur (nm)')
-        ax_stack.set_title(f"Structure (It. {iter_num})", fontsize=10)
-    except Exception as e:
-        ax_stack.text(0.5, 0.5, f"Erreur de tracé:\n{e}", ha='center', va='center')
-    plt.tight_layout()
-    placeholders['stack'].pyplot(fig_stack)
-    plt.close(fig_stack)
-
 def _run_core_optimization(ep_start_optim: np.ndarray,
                                validated_inputs: Dict, active_targets: List[Dict],
-                               min_thickness_phys: float, log_prefix: str = "",
-                               progress_placeholders: Optional[Dict] = None,
-                               update_frequency: int = 20
+                               min_thickness_phys: float, log_prefix: str = ""
                                ) -> Tuple[Optional[np.ndarray], bool, float, List[str], str]:
     logs = []
     num_layers_start = len(ep_start_optim)
@@ -497,21 +394,6 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
                 print(f"Error in scipy_obj_grad_wrapper: {e_wrap}")
                 return np.inf, np.zeros_like(ep_vector_np_in, dtype=np.float64)
         
-        iteration_counter = [0]
-        def scipy_callback(xk):
-            iteration_counter[0] += 1
-            if progress_placeholders and (iteration_counter[0] % update_frequency == 0):
-                try:
-                    update_progress_plots(
-                        ep_vector=xk,
-                        validated_inputs=validated_inputs,
-                        active_targets=active_targets,
-                        placeholders=progress_placeholders,
-                        iter_num=iteration_counter[0]
-                    )
-                except Exception as e:
-                    progress_placeholders['status'].warning(f"Failed to update plot at iter {iteration_counter[0]}: {e}")
-
         lbfgsb_bounds = [(min_thickness_phys, None)] * num_layers_start
         options = {'maxiter': maxiter, 'maxfun': maxfun,
                    'disp': False, 
@@ -524,8 +406,7 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
                           method='L-BFGS-B',
                           jac=True,
                           bounds=lbfgsb_bounds,
-                          options=options,
-                          callback=scipy_callback if progress_placeholders else None)
+                          options=options)
         
         final_cost = result.fun if np.isfinite(result.fun) else np.inf
         result_message_str = result.message.decode('utf-8') if isinstance(result.message, bytes) else str(result.message)
@@ -535,20 +416,20 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
             final_ep = np.maximum(final_ep_raw, min_thickness_phys)
             optim_success = True
             log_status = "success" if result.success else "limit reached"
-            add_log(f"{log_prefix}Optimization finished ({log_status}). Final cost: {final_cost:.3e}, Msg: {result_message_str}")
+            logs.append(f"{log_prefix}Optimization finished ({log_status}). Final cost: {final_cost:.3e}, Msg: {result_message_str}")
         else:
             optim_success = False
             final_ep = np.maximum(ep_start_optim, min_thickness_phys) 
-            add_log(f"{log_prefix}Optimization FAILED. Status: {result.status}, Msg: {result_message_str}, Cost: {final_cost:.3e}")
+            logs.append(f"{log_prefix}Optimization FAILED. Status: {result.status}, Msg: {result_message_str}, Cost: {final_cost:.3e}")
             try:
                 reverted_cost, _ = scipy_obj_grad_wrapper(final_ep, *static_args_for_jax)
-                add_log(f"{log_prefix}Reverted to initial (clamped) structure. Recalculated cost: {reverted_cost:.3e}")
+                logs.append(f"{log_prefix}Reverted to initial (clamped) structure. Recalculated cost: {reverted_cost:.3e}")
                 final_cost = reverted_cost if np.isfinite(reverted_cost) else np.inf
             except Exception as cost_e:
-                add_log(f"{log_prefix}Reverted to initial (clamped) structure. ERROR recalculating cost: {cost_e}")
+                logs.append(f"{log_prefix}Reverted to initial (clamped) structure. ERROR recalculating cost: {cost_e}")
                 final_cost = np.inf
     except Exception as e_optim:
-        add_log(f"{log_prefix}Major ERROR during JAX/Scipy optimization: {e_optim}\n{traceback.format_exc(limit=2)}")
+        logs.append(f"{log_prefix}Major ERROR during JAX/Scipy optimization: {e_optim}\n{traceback.format_exc(limit=2)}")
         st.error(f"Critical error during optimization: {e_optim}")
         final_ep = np.maximum(ep_start_optim, min_thickness_phys) if ep_start_optim is not None else None
         optim_success = False
@@ -798,7 +679,7 @@ def _run_needle_iterations(ep_start: np.ndarray, num_needles: int,
         num_layers_current = len(current_ep_iter)
         if num_layers_current == 0:
             logs.append(f"{log_prefix} Empty structure, stopping needle iterations."); break
-        st.write(f"{log_prefix} Needle scan {i+1}...")
+        
         ep_after_scan, cost_after_scan, scan_logs, inserted_idx = _perform_needle_insertion_scan(
             current_ep_iter,
             nH_material, nL_material, nSub_material,
@@ -811,7 +692,7 @@ def _run_needle_iterations(ep_start: np.ndarray, num_needles: int,
         if ep_after_scan is None:
             logs.append(f"{log_prefix} Needle scan {i + 1} found no improvement. Stopping needle iterations."); break
         logs.append(f"{log_prefix} Scan {i + 1} found potential improvement. Re-optimizing...")
-        st.write(f"{log_prefix} Re-optimizing after needle {i+1}...")
+        
         ep_after_reopt, optim_success, final_cost_reopt, optim_logs, optim_status_msg = \
             _run_core_optimization(ep_after_scan, validated_inputs, active_targets,
                                      min_thickness_phys, log_prefix=f"{log_prefix}  [Re-Opt {i+1}] ")
@@ -830,172 +711,6 @@ def _run_needle_iterations(ep_start: np.ndarray, num_needles: int,
             break
     logs.append(f"{log_prefix} End of needle iterations. Best final MSE: {best_mse_overall:.6e}")
     return best_ep_overall, best_mse_overall, logs
-
-def run_auto_mode(initial_ep: Optional[np.ndarray],
-                      validated_inputs: Dict, active_targets: List[Dict],
-                      log_callback: Callable):
-    logs = []
-    start_time_auto = time.time()
-    log_callback("#"*10 + f" Starting Auto Mode (Max {AUTO_MAX_CYCLES} Cycles) " + "#"*10)
-    best_ep_so_far = None
-    best_mse_so_far = np.inf
-    num_cycles_done = 0
-    termination_reason = f"Max {AUTO_MAX_CYCLES} cycles reached"
-    threshold_for_thin_removal = validated_inputs.get('auto_thin_threshold', 1.0)
-    log_callback(f"  Auto removal threshold: {threshold_for_thin_removal:.3f} nm")
-    try:
-        current_ep = None
-        if initial_ep is not None:
-            log_callback("  Auto Mode: Using previous optimized structure.")
-            current_ep = initial_ep.copy()
-            l_min_optim, l_max_optim = validated_inputs['l_range_deb'], validated_inputs['l_range_fin']
-            l_step_optim = validated_inputs['l_step']
-            num_pts = min(max(2, int(np.round((l_max_optim - l_min_optim) / l_step_optim)) + 1), 100)
-            l_vec_optim_np_auto = np.geomspace(l_min_optim, l_max_optim, num_pts)
-            l_vec_optim_np_auto = l_vec_optim_np_auto[(l_vec_optim_np_auto > 0) & np.isfinite(l_vec_optim_np_auto)]
-            if not l_vec_optim_np_auto.size: raise ValueError("Failed to generate lambda for initial auto MSE calc.")
-            l_vec_optim_jax = jnp.asarray(l_vec_optim_np_auto)
-            nH_arr, log_h = _get_nk_array_for_lambda_vec(validated_inputs['nH_material'], l_vec_optim_jax)
-            nL_arr, log_l = _get_nk_array_for_lambda_vec(validated_inputs['nL_material'], l_vec_optim_jax)
-            nSub_arr, log_sub = _get_nk_array_for_lambda_vec(validated_inputs['nSub_material'], l_vec_optim_jax)
-            log_callback(log_h); log_callback(log_l); log_callback(log_sub)
-            if nH_arr is None or nL_arr is None or nSub_arr is None: raise RuntimeError("Failed to load indices for initial auto MSE.")
-            active_targets_tuple = tuple((float(t['min']), float(t['max']), float(t['target_min']), float(t['target_max'])) for t in active_targets)
-            static_args = (nH_arr, nL_arr, nSub_arr, l_vec_optim_jax, active_targets_tuple, MIN_THICKNESS_PHYS_NM)
-            cost_fn_jit = jax.jit(calculate_mse_for_optimization_penalized_jax)
-            initial_mse_jax = cost_fn_jit(jnp.asarray(current_ep), *static_args)
-            initial_mse = float(np.array(initial_mse_jax))
-            if not np.isfinite(initial_mse): raise ValueError("Initial MSE (from optimized state) not finite.")
-            best_mse_so_far = initial_mse
-            best_ep_so_far = current_ep.copy()
-            log_callback(f"  Initial MSE (from optimized state): {best_mse_so_far:.6e}")
-        else:
-            log_callback("  Auto Mode: Using nominal structure (QWOT).")
-            emp_list = [float(e.strip()) for e in validated_inputs['emp_str'].split(',') if e.strip()]
-            if not emp_list: raise ValueError("Nominal QWOT empty.")
-            ep_nominal, logs_ep_init = calculate_initial_ep(emp_list, validated_inputs['l0'],
-                                                              validated_inputs['nH_material'], validated_inputs['nL_material'])
-            log_callback(logs_ep_init)
-            if ep_nominal is None: raise RuntimeError("Failed to calculate initial nominal thicknesses.")
-            log_callback(f"  Nominal structure: {len(ep_nominal)} layers. Starting initial optimization...")
-            st.info("Auto Mode: Initial optimization of nominal structure...")
-            ep_after_initial_opt, initial_opt_success, initial_mse, initial_opt_logs, initial_opt_msg = \
-                _run_core_optimization(ep_nominal, validated_inputs, active_targets,
-                                         MIN_THICKNESS_PHYS_NM, log_prefix="  [Auto Init Opt] ")
-            log_callback(initial_opt_logs)
-            if not initial_opt_success:
-                log_callback(f"ERROR: Failed initial optimization in Auto Mode ({initial_opt_msg}). Aborting.")
-                st.error(f"Failed initial optimization of Auto Mode: {initial_opt_msg}")
-                return None, np.inf, logs
-            log_callback(f"  Initial optimization finished. MSE: {initial_mse:.6e}")
-            best_ep_so_far = ep_after_initial_opt.copy()
-            best_mse_so_far = initial_mse
-        if best_ep_so_far is None or not np.isfinite(best_mse_so_far):
-            raise RuntimeError("Invalid starting state for Auto cycles.")
-        log_callback(f"--- Starting Auto Cycles (Starting MSE: {best_mse_so_far:.6e}, {len(best_ep_so_far)} layers) ---")
-        for cycle_num in range(AUTO_MAX_CYCLES):
-            log_callback(f"\n--- Auto Cycle {cycle_num + 1} / {AUTO_MAX_CYCLES} ---")
-            st.info(f"Auto Cycle {cycle_num + 1}/{AUTO_MAX_CYCLES} | Current MSE: {best_mse_so_far:.3e}")
-            mse_at_cycle_start = best_mse_so_far
-            ep_at_cycle_start = best_ep_so_far.copy()
-            cycle_improved_globally = False
-            log_callback(f"  [Cycle {cycle_num+1}] Needle Phase ({AUTO_NEEDLES_PER_CYCLE} max iterations)...")
-            st.write(f"Cycle {cycle_num + 1}: Needle Phase...")
-            l_min_optim, l_max_optim = validated_inputs['l_range_deb'], validated_inputs['l_range_fin']
-            l_step_optim = validated_inputs['l_step']
-            num_pts_needle_auto = min(max(2, int(np.round((l_max_optim - l_min_optim) / l_step_optim)) + 1), 100)
-            l_vec_optim_np_needle_auto = np.geomspace(l_min_optim, l_max_optim, num_pts_needle_auto)
-            l_vec_optim_np_needle_auto = l_vec_optim_np_needle_auto[(l_vec_optim_np_needle_auto > 0) & np.isfinite(l_vec_optim_np_needle_auto)]
-            if not l_vec_optim_np_needle_auto.size:
-                log_callback("  ERROR: cannot generate lambda for needle phase. Cycle aborted.")
-                break
-            ep_after_needles, mse_after_needles, needle_logs = \
-                _run_needle_iterations(best_ep_so_far, AUTO_NEEDLES_PER_CYCLE, validated_inputs, active_targets,
-                                         MIN_THICKNESS_PHYS_NM, l_vec_optim_np_needle_auto,
-                                         DEFAULT_NEEDLE_SCAN_STEP_NM, BASE_NEEDLE_THICKNESS_NM,
-                                         log_prefix=f"    [Needle {cycle_num+1}] ")
-            log_callback(needle_logs)
-            log_callback(f"  [Cycle {cycle_num+1}] End Needle Phase. MSE: {mse_after_needles:.6e}")
-            if mse_after_needles < best_mse_so_far - MSE_IMPROVEMENT_TOLERANCE:
-                log_callback(f"    Global improvement by needle phase (vs {best_mse_so_far:.6e}).")
-                best_ep_so_far = ep_after_needles.copy()
-                best_mse_so_far = mse_after_needles
-                cycle_improved_globally = True
-            else:
-                log_callback(f"    No global improvement by needle phase (vs {best_mse_so_far:.6e}).")
-                best_ep_so_far = ep_after_needles.copy() 
-                best_mse_so_far = mse_after_needles    
-            log_callback(f"  [Cycle {cycle_num+1}] Thinning Phase (< {threshold_for_thin_removal:.3f} nm) + Re-Opt...")
-            st.write(f"Cycle {cycle_num + 1}: Thinning Phase...")
-            layers_removed_this_cycle = 0;
-            max_thinning_attempts = len(best_ep_so_far) + 2
-            for attempt in range(max_thinning_attempts):
-                current_num_layers_thin = len(best_ep_so_far)
-                if current_num_layers_thin <= 2:
-                    log_callback("    Structure too small (< 3 layers), stopping thinning.")
-                    break
-                ep_after_single_removal, structure_changed, removal_logs = \
-                    _perform_layer_merge_or_removal_only(best_ep_so_far, MIN_THICKNESS_PHYS_NM,
-                                                         log_prefix=f"    [Thin {cycle_num+1}.{attempt+1}] ",
-                                                         threshold_for_removal=threshold_for_thin_removal)
-                log_callback(removal_logs)
-                if structure_changed and ep_after_single_removal is not None:
-                    layers_removed_this_cycle += 1
-                    log_callback(f"    Layer removed/merged ({layers_removed_this_cycle} in this cycle). Re-optimizing ({len(ep_after_single_removal)} layers)...")
-                    st.write(f"Cycle {cycle_num + 1}: Re-opt after removal {layers_removed_this_cycle}...")
-                    ep_after_thin_reopt, thin_reopt_success, mse_after_thin_reopt, thin_reopt_logs, thin_reopt_msg = \
-                        _run_core_optimization(ep_after_single_removal, validated_inputs, active_targets,
-                                                 MIN_THICKNESS_PHYS_NM, log_prefix=f"      [ReOptThin {cycle_num+1}.{attempt+1}] ")
-                    log_callback(thin_reopt_logs)
-                    if thin_reopt_success:
-                        log_callback(f"      Re-optimization successful. MSE: {mse_after_thin_reopt:.6e}")
-                        if mse_after_thin_reopt < best_mse_so_far - MSE_IMPROVEMENT_TOLERANCE:
-                            log_callback(f"      Global improvement by thinning+reopt (vs {best_mse_so_far:.6e}).")
-                            best_ep_so_far = ep_after_thin_reopt.copy()
-                            best_mse_so_far = mse_after_thin_reopt
-                            cycle_improved_globally = True
-                        else:
-                            log_callback(f"      No global improvement (vs {best_mse_so_far:.6e}). Continuing with this result.")
-                            best_ep_so_far = ep_after_thin_reopt.copy()
-                            best_mse_so_far = mse_after_thin_reopt
-                    else:
-                        log_callback(f"    WARNING: Re-optimization after thinning FAILED ({thin_reopt_msg}). Stopping thinning for this cycle.")
-                        best_ep_so_far = ep_after_single_removal.copy()
-                        try:
-                            current_mse_jax = cost_fn_jit(jnp.asarray(best_ep_so_far), *static_args) 
-                            best_mse_so_far = float(np.array(current_mse_jax))
-                            if not np.isfinite(best_mse_so_far): best_mse_so_far = np.inf
-                            log_callback(f"      MSE after failed re-opt (reduced structure, not opt): {best_mse_so_far:.6e}")
-                        except Exception as e_cost_fail:
-                            log_callback(f"      ERROR recalculating MSE after failed re-opt: {e_cost_fail}"); best_mse_so_far = np.inf
-                        break
-                else:
-                    log_callback("    No further layers to remove/merge in this phase.")
-                    break
-            log_callback(f"  [Cycle {cycle_num+1}] End Thinning Phase. {layers_removed_this_cycle} layer(s) removed.")
-            num_cycles_done += 1
-            log_callback(f"--- End Auto Cycle {cycle_num + 1} --- Best current MSE: {best_mse_so_far:.6e} ({len(best_ep_so_far)} layers) ---")
-            if not cycle_improved_globally and best_mse_so_far >= mse_at_cycle_start - MSE_IMPROVEMENT_TOLERANCE :
-                log_callback(f"No significant improvement in Cycle {cycle_num + 1} (Start: {mse_at_cycle_start:.6e}, End: {best_mse_so_far:.6e}). Stopping Auto Mode.")
-                termination_reason = f"No improvement (Cycle {cycle_num + 1})"
-                if best_mse_so_far > mse_at_cycle_start + MSE_IMPROVEMENT_TOLERANCE : 
-                    log_callback("  MSE increased, reverting to state before this cycle.")
-                    best_ep_so_far = ep_at_cycle_start.copy()
-                    best_mse_so_far = mse_at_cycle_start
-                break
-        log_callback(f"\n--- Auto Mode Finished after {num_cycles_done} cycles ---")
-        log_callback(f"Reason: {termination_reason}")
-        log_callback(f"Best final MSE: {best_mse_so_far:.6e} with {len(best_ep_so_far)} layers.")
-        return best_ep_so_far, best_mse_so_far, logs
-    except (ValueError, RuntimeError, TypeError) as e:
-        log_callback(f"FATAL ERROR during Auto Mode (Setup/Workflow): {e}")
-        st.error(f"Auto Mode Error: {e}")
-        return None, np.inf, logs
-    except Exception as e_fatal:
-        log_callback(f"Unexpected FATAL ERROR during Auto Mode: {type(e_fatal).__name__}: {e_fatal}")
-        st.error(f"Unexpected Auto Mode Error: {e_fatal}")
-        traceback.print_exc()
-        return None, np.inf, logs
 
 def validate_targets() -> Optional[List[Dict]]:
     active_targets = []
@@ -1213,7 +928,7 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
             if not is_optimized_run:
                 clear_optimized_state()
                 st.session_state.current_ep = ep_to_calculate.copy() if ep_to_calculate is not None else None
-            st.success(f"{calc_type} calculation finished.")
+            add_log(f"{calc_type} calculation finished.")
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during {calc_type} calculation: {e}")
             add_log(f"ERROR: {e}")
@@ -1227,21 +942,6 @@ def run_local_optimization_wrapper(progress_container):
     st.session_state.last_calc_results = {}
     st.session_state.last_mse = None
     clear_optimized_state()
-
-    with progress_container:
-        st.subheader("Progression de l'optimisation")
-        status_placeholder = st.empty()
-        spec_placeholder = st.empty()
-        col1, col2 = st.columns(2)
-        idx_placeholder = col1.empty()
-        stack_placeholder = col2.empty()
-
-        progress_placeholders = {
-            "status": status_placeholder,
-            "spec": spec_placeholder,
-            "idx": idx_placeholder,
-            "stack": stack_placeholder,
-        }
 
     with st.spinner("Local optimization in progress..."):
         try:
@@ -1285,13 +985,9 @@ def run_local_optimization_wrapper(progress_container):
             
             final_ep, success, final_cost, optim_logs, msg = \
                 _run_core_optimization(ep_start, validated_inputs, active_targets,
-                                         MIN_THICKNESS_PHYS_NM, log_prefix="  [Opt Local] ",
-                                         progress_placeholders=progress_placeholders,
-                                         update_frequency=st.session_state.update_frequency)
+                                         MIN_THICKNESS_PHYS_NM, log_prefix="  [Opt Local] ")
             add_log(optim_logs)
             
-            progress_container.empty()
-
             if success and final_ep is not None:
                 st.session_state.optimized_ep = final_ep.copy()
                 st.session_state.current_ep = final_ep.copy()
@@ -1321,18 +1017,18 @@ def run_local_optimization_wrapper(progress_container):
             add_log(f"FATAL ERROR: {e_fatal}")
             clear_optimized_state()
 
-def run_auto_mode_wrapper():
+def run_needle_wrapper():
     st.session_state.last_calc_results = {}
     st.session_state.last_mse = None
-    with st.spinner("Automatic Mode in progress (can be very long)..."):
+    with st.spinner("Needle cycle in progress..."):
         try:
             active_targets = validate_targets()
             if active_targets is None or not active_targets:
-                st.error("Auto Mode requires active and valid targets.")
+                st.error("Needle optimization requires active and valid targets.")
                 return
             l_min_opt, l_max_opt = get_lambda_range_from_targets(active_targets)
             if l_min_opt is None:
-                st.error("Could not determine lambda range for Auto Mode.")
+                st.error("Could not determine lambda range for Needle optimization.")
                 return
             
             nH_r = st.session_state.get('nH_r', 2.35)
@@ -1354,16 +1050,36 @@ def run_auto_mode_wrapper():
                 'nSub_material': nSub_mat,
             }
 
-            ep_start_auto = None
+            ep_start_needle = None
             if st.session_state.get('is_optimized_state') and st.session_state.get('optimized_ep') is not None:
-                ep_start_auto = st.session_state.optimized_ep.copy()
-            final_ep, final_mse, auto_logs = run_auto_mode(
-                initial_ep=ep_start_auto,
+                ep_start_needle = st.session_state.optimized_ep.copy()
+                add_log("Needle Cycle: Starting from existing optimized structure.")
+            else:
+                emp_list = [float(e.strip()) for e in validated_inputs['emp_str'].split(',') if e.strip()]
+                if not emp_list:
+                    st.error("Nominal QWOT is empty. Cannot start Needle cycle.")
+                    return
+                ep_start_needle, logs_ep_init = calculate_initial_ep(emp_list, validated_inputs['l0'], nH_mat, nL_mat)
+                add_log(logs_ep_init)
+                if ep_start_needle is None:
+                    st.error("Failed to calculate initial thicknesses for Needle cycle.")
+                    return
+                add_log("Needle Cycle: Starting from nominal structure.")
+
+            l_vec_optim_np = np.geomspace(l_min_opt, l_max_opt, 100)
+            final_ep, final_mse, needle_logs = _run_needle_iterations(
+                ep_start=ep_start_needle,
+                num_needles=1,
                 validated_inputs=validated_inputs,
                 active_targets=active_targets,
-                log_callback=add_log
+                min_thickness_phys=MIN_THICKNESS_PHYS_NM,
+                l_vec_optim_np_in=l_vec_optim_np,
+                scan_step_nm=DEFAULT_NEEDLE_SCAN_STEP_NM,
+                base_needle_thickness_nm=BASE_NEEDLE_THICKNESS_NM,
+                log_prefix="[Needle Cycle]"
             )
-            add_log(auto_logs)
+            add_log(needle_logs)
+
             if final_ep is not None and np.isfinite(final_mse):
                 st.session_state.optimized_ep = final_ep.copy()
                 st.session_state.current_ep = final_ep.copy()
@@ -1373,20 +1089,21 @@ def run_auto_mode_wrapper():
                 add_log(logs_qwot)
                 if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                     st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
-                else: st.session_state.optimized_qwot_str = "QWOT N/A"
-                st.success(f"Auto Mode finished. Final MSE: {final_mse:.4e}")
+                else:
+                    st.session_state.optimized_qwot_str = "QWOT N/A"
+                st.success(f"Needle cycle finished. Final MSE: {final_mse:.4e}")
                 st.session_state.needs_rerun_calc = True
-                st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Auto Mode"}
+                st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': "Needle Cycle"}
             else:
-                st.error("Automatic Mode failed or did not produce a valid result.")
+                st.error("Needle cycle failed or did not produce a valid result.")
                 clear_optimized_state()
                 st.session_state.needs_rerun_calc = True
-                st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (After Auto Fail)"}
+                st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (After Needle Fail)"}
         except (ValueError, RuntimeError, TypeError) as e:
-            st.error(f"Error during Auto Mode: {e}")
+            st.error(f"Error during Needle cycle: {e}")
             add_log(f"ERROR: {e}")
         except Exception as e_fatal:
-            st.error(f"Unexpected error during Auto Mode: {e_fatal}")
+            st.error(f"Unexpected error during Needle cycle: {e_fatal}")
             add_log(f"FATAL ERROR: {e_fatal}")
         finally:
             pass
@@ -1470,7 +1187,7 @@ def run_remove_thin_wrapper():
             )
             add_log(removal_logs)
             if structure_changed and ep_after_removal is not None:
-                st.write("Re-optimizing after removal...")
+                add_log("Re-optimizing after removal...")
                 final_ep, success, final_cost, optim_logs, msg = \
                     _run_core_optimization(ep_after_removal, validated_inputs, active_targets,
                                              MIN_THICKNESS_PHYS_NM, log_prefix="  [ReOpt Thin] ")
@@ -1553,7 +1270,6 @@ if 'init_done' not in st.session_state:
     st.session_state.l0 = 500.0
     st.session_state.l_step = 10.0
     st.session_state.auto_thin_threshold = 1.0
-    st.session_state.update_frequency = 20
     st.session_state.auto_scale_y = False
     
     st.session_state.targets = [
@@ -1632,7 +1348,6 @@ with main_layout[0]:
     st.subheader("Targets (T) & Calculation Parameters")
     st.session_state.l_step = st.number_input("λ Step for MSE Grid (nm)", value=st.session_state.l_step, min_value=0.1, format="%.2f", key="l_step_input_main", on_change=trigger_nominal_recalc, help="Wavelength step for optimization grid points (max 100 points). Plotting uses a finer grid.")
     st.session_state.auto_thin_threshold = st.number_input("Auto Thin Layer Removal Threshold (nm)", value=st.session_state.auto_thin_threshold, min_value=MIN_THICKNESS_PHYS_NM, format="%.3f", key="auto_thin_input_main", help="In Auto mode, layers thinner than this may be removed.")
-    st.session_state.update_frequency = st.number_input("Fréquence de mise à jour (itérations)", min_value=1, value=20, step=5, key="update_freq_input", help="Mettre à jour les graphiques de progression toutes les N itérations pendant l'optimisation.")
     st.session_state.auto_scale_y = st.checkbox("Echelle Y automatique", value=st.session_state.auto_scale_y, key="auto_scale_y_cb", help="Ajuster automatiquement l'axe Y du graphe de transmittance.")
 
     hdr_cols = st.columns([0.5, 1, 1, 1, 1])
@@ -1657,21 +1372,17 @@ with main_layout[1]:
         with menu_cols[0]:
             if st.button("📊 Eval Nom.", key="eval_nom_top", help="Evaluate Nominal Structure", use_container_width=True):
                 st.session_state.action = 'eval_nom'
-                st.rerun()
         with menu_cols[1]:
             if st.button("✨ Opt Local", key="optim_local_top", help="Local Optimization", use_container_width=True):
                 st.session_state.action = 'opt_local'
-                st.rerun()
         with menu_cols[2]:
-            if st.button("🤖 Auto", key="optim_auto_top", help="Auto Mode (Needle > Thin > Opt)", use_container_width=True):
-                st.session_state.action = 'auto'
-                st.rerun()
+            if st.button("💉 Needle", key="optim_needle_top", help="Run a single Needle cycle (insert one layer and re-optimize)", use_container_width=True):
+                st.session_state.action = 'needle'
         with menu_cols[3]:
             current_structure_for_check = st.session_state.get('current_ep')
             can_remove_structurally = current_structure_for_check is not None and len(current_structure_for_check) > 2
             if st.button("🗑️ Thin+ReOpt", key="remove_thin_top", help="Remove Thin Layer + Re-optimize", disabled=not can_remove_structurally, use_container_width=True):
                 st.session_state.action = 'remove_thin'
-                st.rerun()
         with menu_cols[4]:
             can_optimize_top = st.session_state.get('is_optimized_state', False) and st.session_state.get('optimized_ep') is not None
             if st.button("💾 Opt->Nom", key="set_optim_as_nom_top", help="Set Optimized as Nominal", disabled=not can_optimize_top, use_container_width=True):
@@ -1689,7 +1400,6 @@ with main_layout[1]:
         
         if st.session_state.get('last_calc_results'):
             st.subheader("Final Results")
-            # Display final results here
             state_desc = "Optimized" if st.session_state.is_optimized_state else "Nominal"
             ep_display = st.session_state.optimized_ep if st.session_state.is_optimized_state else st.session_state.current_ep
             num_layers_display = len(ep_display) if ep_display is not None else 0
@@ -1715,12 +1425,7 @@ with main_layout[1]:
                 plt.close(fig_spec)
 
             plot_col1, plot_col2 = st.columns(2)
-            with plot_col1:
-                # ... (index profile plot)
-                pass
-            with plot_col2:
-                # ... (stack plot)
-                pass
+            # ... (plotting code for index and stack)
         
     with logs_tab:
         st.subheader("Logs")
@@ -1736,9 +1441,9 @@ if action_to_run:
         st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (Evaluated)"}
     elif action_to_run == 'opt_local':
         run_local_optimization_wrapper(progress_container)
-        st.session_state.needs_rerun_calc = True # Rerun to show final results cleanly
-    elif action_to_run == 'auto':
-        run_auto_mode_wrapper()
+        st.session_state.needs_rerun_calc = True
+    elif action_to_run == 'needle':
+        run_needle_wrapper()
     elif action_to_run == 'remove_thin':
         run_remove_thin_wrapper()
     st.rerun()
