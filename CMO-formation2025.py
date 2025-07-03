@@ -23,8 +23,18 @@ MSE_IMPROVEMENT_TOLERANCE = 1e-9
 MAXITER_HARDCODED = 1000
 MAXFUN_HARDCODED = 1000
 
-def add_log(message: Union[str, List[str]]):
-    pass
+def add_log_message(message: str):
+    if 'log_messages' not in st.session_state:
+        st.session_state.log_messages = []
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+    st.session_state.log_messages.append(f"[{timestamp}] {message}")
+
+def add_log(messages: Union[str, List[str]]):
+    if isinstance(messages, str):
+        messages = [messages]
+    for msg in messages:
+        if msg: 
+            add_log_message(msg)
 
 MaterialInputType = Union[complex, float, int]
 
@@ -141,8 +151,7 @@ def calculate_T_from_ep_jax(ep_vector: Union[np.ndarray, List[float]],
             return None, logs
         Ts = jnp.ones_like(l_vec_jnp)
         return {'l': np.array(l_vec_jnp), 'Ts': np.array(Ts)}, logs
-    logs.append(f"Preparing indices for {len(l_vec_jnp)} lambdas...")
-    start_time = time.time()
+    
     nH_arr, logs_h = _get_nk_array_for_lambda_vec(nH_material, l_vec_jnp)
     logs.extend(logs_h)
     nL_arr, logs_l = _get_nk_array_for_lambda_vec(nL_material, l_vec_jnp)
@@ -152,7 +161,7 @@ def calculate_T_from_ep_jax(ep_vector: Union[np.ndarray, List[float]],
     if nH_arr is None or nL_arr is None or nSub_arr is None:
         logs.append("Critical error: Failed to load one of the material indices.")
         return None, logs
-    logs.append(f"Index preparation finished in {time.time() - start_time:.3f}s.")
+    
     calculate_single_wavelength_T_hl_jit = jax.jit(calculate_single_wavelength_T_core)
     num_layers = len(ep_vector_jnp)
     indices_alternating = jnp.where(jnp.arange(num_layers)[:, None] % 2 == 0, nH_arr, nL_arr)
@@ -363,7 +372,8 @@ def update_progress_plots(ep_vector: np.ndarray, validated_inputs: Dict, active_
         ax_spec.set_ylabel('Transmittance')
         ax_spec.grid(True, which='both', linestyle=':')
         ax_spec.set_xlim(l_min_plot, l_max_plot)
-        ax_spec.set_ylim(-0.05, 1.05)
+        if not st.session_state.get('auto_scale_y', False):
+            ax_spec.set_ylim(-0.05, 1.05)
         ax_spec.legend(fontsize=8)
         ax_spec.set_title(f"Réponse spectrale (Itération {iter_num})", fontsize=10)
     except Exception as e:
@@ -453,7 +463,7 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
         if not l_vec_optim_np.size:
             raise ValueError("Failed to generate lambda vector for optimization.")
         l_vec_optim_jax = jnp.asarray(l_vec_optim_np)
-        logs.append(f"{log_prefix}Preparing dispersive indices for {len(l_vec_optim_jax)} lambdas...")
+        
         prep_start_time = time.time()
         nH_arr_optim, logs_h = _get_nk_array_for_lambda_vec(nH_material, l_vec_optim_jax)
         logs.extend(logs_h)
@@ -463,7 +473,7 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
         logs.extend(logs_sub)
         if nH_arr_optim is None or nL_arr_optim is None or nSub_arr_optim is None:
             raise RuntimeError("Failed to load indices for optimization.")
-        logs.append(f"{log_prefix} Index preparation finished in {time.time() - prep_start_time:.3f}s.")
+        
         active_targets_tuple = tuple((float(t['min']), float(t['max']), float(t['target_min']), float(t['target_max'])) for t in active_targets)
         static_args_for_jax = (
             nH_arr_optim, nL_arr_optim, nSub_arr_optim,
@@ -506,7 +516,7 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
         options = {'maxiter': maxiter, 'maxfun': maxfun,
                    'disp': False, 
                    'ftol': 1e-12, 'gtol': 1e-8}
-        logs.append(f"{log_prefix}Starting L-BFGS-B with JAX gradient...")
+        
         opt_start_time = time.time()
         result = minimize(scipy_obj_grad_wrapper,
                           ep_start_optim,
@@ -516,7 +526,7 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
                           bounds=lbfgsb_bounds,
                           options=options,
                           callback=scipy_callback if progress_placeholders else None)
-        logs.append(f"{log_prefix}L-BFGS-B (JAX grad) finished in {time.time() - opt_start_time:.3f}s.")
+        
         final_cost = result.fun if np.isfinite(result.fun) else np.inf
         result_message_str = result.message.decode('utf-8') if isinstance(result.message, bytes) else str(result.message)
         is_success_or_limit = (result.success or result.status == 1) and np.isfinite(final_cost)
@@ -525,20 +535,20 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
             final_ep = np.maximum(final_ep_raw, min_thickness_phys)
             optim_success = True
             log_status = "success" if result.success else "limit reached"
-            logs.append(f"{log_prefix}Optimization finished ({log_status}). Final cost: {final_cost:.3e}, Msg: {result_message_str}")
+            add_log(f"{log_prefix}Optimization finished ({log_status}). Final cost: {final_cost:.3e}, Msg: {result_message_str}")
         else:
             optim_success = False
             final_ep = np.maximum(ep_start_optim, min_thickness_phys) 
-            logs.append(f"{log_prefix}Optimization FAILED. Status: {result.status}, Msg: {result_message_str}, Cost: {final_cost:.3e}")
+            add_log(f"{log_prefix}Optimization FAILED. Status: {result.status}, Msg: {result_message_str}, Cost: {final_cost:.3e}")
             try:
                 reverted_cost, _ = scipy_obj_grad_wrapper(final_ep, *static_args_for_jax)
-                logs.append(f"{log_prefix}Reverted to initial (clamped) structure. Recalculated cost: {reverted_cost:.3e}")
+                add_log(f"{log_prefix}Reverted to initial (clamped) structure. Recalculated cost: {reverted_cost:.3e}")
                 final_cost = reverted_cost if np.isfinite(reverted_cost) else np.inf
             except Exception as cost_e:
-                logs.append(f"{log_prefix}Reverted to initial (clamped) structure. ERROR recalculating cost: {cost_e}")
+                add_log(f"{log_prefix}Reverted to initial (clamped) structure. ERROR recalculating cost: {cost_e}")
                 final_cost = np.inf
     except Exception as e_optim:
-        logs.append(f"{log_prefix}Major ERROR during JAX/Scipy optimization: {e_optim}\n{traceback.format_exc(limit=2)}")
+        add_log(f"{log_prefix}Major ERROR during JAX/Scipy optimization: {e_optim}\n{traceback.format_exc(limit=2)}")
         st.error(f"Critical error during optimization: {e_optim}")
         final_ep = np.maximum(ep_start_optim, min_thickness_phys) if ep_start_optim is not None else None
         optim_success = False
@@ -1169,6 +1179,7 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
             results_fine, calc_logs = calculate_T_from_ep_jax(
                 ep_to_calculate, nH_mat, nL_mat, nSub_mat, l_vec_plot_fine_np
             )
+            add_log(calc_logs)
             if results_fine is None:
                 st.error("Main transmittance calculation failed.")
                 return
@@ -1187,6 +1198,7 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
                     results_optim_grid, logs_mse_calc = calculate_T_from_ep_jax(
                         ep_to_calculate, nH_mat, nL_mat, nSub_mat, l_vec_optim_np_display
                     )
+                    add_log(logs_mse_calc)
                     if results_optim_grid is not None:
                         mse_display, num_pts_mse = calculate_final_mse(results_optim_grid, active_targets)
                         st.session_state.last_mse = mse_display
@@ -1204,8 +1216,10 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
             st.success(f"{calc_type} calculation finished.")
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during {calc_type} calculation: {e}")
+            add_log(f"ERROR: {e}")
         except Exception as e_fatal:
             st.error(f"Unexpected error during {calc_type} calculation: {e_fatal}")
+            add_log(f"FATAL ERROR: {e_fatal}")
         finally:
             pass
 
@@ -1215,19 +1229,21 @@ def run_local_optimization_wrapper():
     clear_optimized_state()
 
     with main_layout[1]:
-        st.subheader("Progression de l'optimisation")
-        status_placeholder = st.empty()
-        spec_placeholder = st.empty()
-        col1, col2 = st.columns(2)
-        idx_placeholder = col1.empty()
-        stack_placeholder = col2.empty()
+        results_tab, logs_tab = st.tabs(["Résultats", "Logs"])
+        with results_tab:
+            st.subheader("Progression de l'optimisation")
+            status_placeholder = st.empty()
+            spec_placeholder = st.empty()
+            col1, col2 = st.columns(2)
+            idx_placeholder = col1.empty()
+            stack_placeholder = col2.empty()
 
-        progress_placeholders = {
-            "status": status_placeholder,
-            "spec": spec_placeholder,
-            "idx": idx_placeholder,
-            "stack": stack_placeholder,
-        }
+            progress_placeholders = {
+                "status": status_placeholder,
+                "spec": spec_placeholder,
+                "idx": idx_placeholder,
+                "stack": stack_placeholder,
+            }
 
     with st.spinner("Local optimization in progress..."):
         try:
@@ -1264,6 +1280,7 @@ def run_local_optimization_wrapper():
                 st.error("Nominal QWOT empty, cannot start local optimization.")
                 return
             ep_start, logs_ep_init = calculate_initial_ep(emp_list, validated_inputs['l0'], nH_mat, nL_mat)
+            add_log(logs_ep_init)
             if ep_start is None:
                 st.error("Failed initial thickness calculation for local optimization.")
                 return
@@ -1273,6 +1290,7 @@ def run_local_optimization_wrapper():
                                          MIN_THICKNESS_PHYS_NM, log_prefix="  [Opt Local] ",
                                          progress_placeholders=progress_placeholders,
                                          update_frequency=st.session_state.update_frequency)
+            add_log(optim_logs)
             
             status_placeholder.empty()
             spec_placeholder.empty()
@@ -1285,6 +1303,7 @@ def run_local_optimization_wrapper():
                 st.session_state.is_optimized_state = True
                 st.session_state.last_mse = final_cost
                 qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat)
+                add_log(logs_qwot)
                 if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                     st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                 else:
@@ -1300,9 +1319,11 @@ def run_local_optimization_wrapper():
                 st.session_state.last_mse = None
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during local optimization: {e}")
+            add_log(f"ERROR: {e}")
             clear_optimized_state()
         except Exception as e_fatal:
             st.error(f"Unexpected error during local optimization: {e_fatal}")
+            add_log(f"FATAL ERROR: {e_fatal}")
             clear_optimized_state()
 
 def run_auto_mode_wrapper():
@@ -1347,12 +1368,14 @@ def run_auto_mode_wrapper():
                 active_targets=active_targets,
                 log_callback=add_log
             )
+            add_log(auto_logs)
             if final_ep is not None and np.isfinite(final_mse):
                 st.session_state.optimized_ep = final_ep.copy()
                 st.session_state.current_ep = final_ep.copy()
                 st.session_state.is_optimized_state = True
                 st.session_state.last_mse = final_mse
                 qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat)
+                add_log(logs_qwot)
                 if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                     st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                 else: st.session_state.optimized_qwot_str = "QWOT N/A"
@@ -1366,8 +1389,10 @@ def run_auto_mode_wrapper():
                 st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (After Auto Fail)"}
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during Auto Mode: {e}")
+            add_log(f"ERROR: {e}")
         except Exception as e_fatal:
             st.error(f"Unexpected error during Auto Mode: {e_fatal}")
+            add_log(f"FATAL ERROR: {e_fatal}")
         finally:
             pass
 
@@ -1395,6 +1420,7 @@ def run_remove_thin_wrapper():
                 ep_start_removal, logs_ep_init = calculate_initial_ep(
                     emp_list_temp, st.session_state.l0, nH_mat_temp, nL_mat_temp
                 )
+                add_log(logs_ep_init)
                 if ep_start_removal is None:
                     st.error("Failed to calculate nominal structure from QWOT for removal.")
                     return
@@ -1447,17 +1473,20 @@ def run_remove_thin_wrapper():
                 log_prefix="  [Remove] ",
                 threshold_for_removal=None 
             )
+            add_log(removal_logs)
             if structure_changed and ep_after_removal is not None:
                 st.write("Re-optimizing after removal...")
                 final_ep, success, final_cost, optim_logs, msg = \
                     _run_core_optimization(ep_after_removal, validated_inputs, active_targets,
                                              MIN_THICKNESS_PHYS_NM, log_prefix="  [ReOpt Thin] ")
+                add_log(optim_logs)
                 if success and final_ep is not None:
                     st.session_state.optimized_ep = final_ep.copy()
                     st.session_state.current_ep = final_ep.copy() 
                     st.session_state.is_optimized_state = True 
                     st.session_state.last_mse = final_cost
                     qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat)
+                    add_log(logs_qwot)
                     if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                         st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                     else: st.session_state.optimized_qwot_str = "QWOT N/A"
@@ -1476,18 +1505,21 @@ def run_remove_thin_wrapper():
                         l_vec_optim_np_disp = np.geomspace(l_min_opt_disp, l_max_opt_disp, num_pts_optim_disp)
                         l_vec_optim_np_disp = l_vec_optim_np_disp[(l_vec_optim_np_disp > 0) & np.isfinite(l_vec_optim_np_disp)]
                         if l_vec_optim_np_disp.size > 0:
-                            results_fail_grid, _ = calculate_T_from_ep_jax(ep_after_removal, nH_mat, nL_mat, nSub_mat, l_vec_optim_np_disp)
+                            results_fail_grid, logs_fail = calculate_T_from_ep_jax(ep_after_removal, nH_mat, nL_mat, nSub_mat, l_vec_optim_np_disp)
+                            add_log(logs_fail)
                             if results_fail_grid:
                                 mse_fail, _ = calculate_final_mse(results_fail_grid, active_targets)
                                 st.session_state.last_mse = mse_fail
                             else: st.session_state.last_mse = None
-                        qwots_fail, _ = calculate_qwot_from_ep(ep_after_removal, validated_inputs['l0'], nH_mat, nL_mat)
+                        qwots_fail, logs_qwot_fail = calculate_qwot_from_ep(ep_after_removal, validated_inputs['l0'], nH_mat, nL_mat)
+                        add_log(logs_qwot_fail)
                         if qwots_fail is not None and not np.any(np.isnan(qwots_fail)):
                             st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_fail])
                         else: st.session_state.optimized_qwot_str = "QWOT N/A (ReOpt Fail)"
                     except Exception as e_recalc:
                         st.session_state.last_mse = None
                         st.session_state.optimized_qwot_str = "Recalc Error"
+                        add_log(f"ERROR recalculating state after failed re-opt: {e_recalc}")
                     st.session_state.needs_rerun_calc = True
                     st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': "Optimized (Post-Remove, Re-Opt Fail)"}
             else:
@@ -1497,10 +1529,12 @@ def run_remove_thin_wrapper():
                 except IndexError: pass
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during Thin Layer Removal: {e}")
+            add_log(f"ERROR: {e}")
             try: st.session_state.ep_history.pop()
             except IndexError: pass
         except Exception as e_fatal:
             st.error(f"Unexpected error during Thin Layer Removal: {e_fatal}")
+            add_log(f"FATAL ERROR: {e_fatal}")
             try: st.session_state.ep_history.pop()
             except IndexError: pass
         finally:
@@ -1508,7 +1542,7 @@ def run_remove_thin_wrapper():
 
 st.set_page_config(layout="wide", page_title="formation_CMO_2025")
 if 'init_done' not in st.session_state:
-    st.session_state.log_messages = ["[Initialization] Welcome."]
+    st.session_state.log_messages = []
     st.session_state.current_ep = None
     st.session_state.current_qwot = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
     st.session_state.optimized_ep = None
@@ -1524,6 +1558,7 @@ if 'init_done' not in st.session_state:
     st.session_state.l_step = 10.0
     st.session_state.auto_thin_threshold = 1.0
     st.session_state.update_frequency = 20
+    st.session_state.auto_scale_y = False
     
     st.session_state.targets = [
         {'enabled': True, 'min': 400.0, 'max': 500.0, 'target_min': 1.0, 'target_max': 1.0},
@@ -1540,6 +1575,7 @@ if 'init_done' not in st.session_state:
     st.session_state.init_done = True
     st.session_state.needs_rerun_calc = True
     st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Initial Load"}
+    add_log("Application initialized.")
 
 def trigger_nominal_recalc():
     if not st.session_state.get('calculating', False):
@@ -1632,7 +1668,8 @@ with main_layout[0]:
     st.session_state.l_step = st.number_input("λ Step for MSE Grid (nm)", value=st.session_state.l_step, min_value=0.1, format="%.2f", key="l_step_input_main", on_change=trigger_nominal_recalc, help="Wavelength step for optimization grid points (max 100 points). Plotting uses a finer grid.")
     st.session_state.auto_thin_threshold = st.number_input("Auto Thin Layer Removal Threshold (nm)", value=st.session_state.auto_thin_threshold, min_value=MIN_THICKNESS_PHYS_NM, format="%.3f", key="auto_thin_input_main", help="In Auto mode, layers thinner than this may be removed.")
     st.session_state.update_frequency = st.number_input("Fréquence de mise à jour (itérations)", min_value=1, value=20, step=5, key="update_freq_input", help="Mettre à jour les graphiques de progression toutes les N itérations pendant l'optimisation.")
-    
+    st.session_state.auto_scale_y = st.checkbox("Echelle Y automatique", value=st.session_state.auto_scale_y, key="auto_scale_y_cb", help="Ajuster automatiquement l'axe Y du graphe de transmittance.")
+
     hdr_cols = st.columns([0.5, 1, 1, 1, 1])
     hdrs = ["On", "λmin", "λmax", "Tmin", "Tmax"]
     for c, h in zip(hdr_cols, hdrs): c.caption(h)
@@ -1648,194 +1685,201 @@ with main_layout[0]:
         st.session_state.targets[i]['target_max'] = cols[4].number_input(f"Tmax Target {i+1}", value=target.get('target_max', 0.0), min_value=0.0, max_value=1.0, format="%.3f", step=0.01, key=f"target_tmax_{i}_main", label_visibility="collapsed", on_change=trigger_nominal_recalc)
 
 with main_layout[1]: 
-    st.subheader("Results")
-    state_desc = "Optimized" if st.session_state.is_optimized_state else "Nominal"
-    ep_display = st.session_state.optimized_ep if st.session_state.is_optimized_state else st.session_state.current_ep
-    num_layers_display = len(ep_display) if ep_display is not None else 0
-    res_info_cols = st.columns(3)
-    with res_info_cols[0]:
-        st.caption(f"State: {state_desc} ({num_layers_display} layers)")
-    with res_info_cols[1]:
-        if st.session_state.last_mse is not None and np.isfinite(st.session_state.last_mse):
-            st.caption(f"MSE: {st.session_state.last_mse:.4e}")
-        else:
-            st.caption("MSE: N/A")
-    with res_info_cols[2]:
-        min_thick_str = "N/A"
-        if ep_display is not None and ep_display.size > 0:
-            valid_thick = ep_display[ep_display >= MIN_THICKNESS_PHYS_NM - 1e-9]
-            if valid_thick.size > 0:
-                min_thick_str = f"{np.min(valid_thick):.3f} nm"
-        st.caption(f"Min Thick: {min_thick_str}")
-    if st.session_state.is_optimized_state and st.session_state.get('optimized_qwot_str'):
-        st.text_input("Optimized QWOT (at original λ₀)", value=st.session_state.optimized_qwot_str, disabled=True, key="opt_qwot_display_main_res")
-    if 'last_calc_results' in st.session_state and st.session_state.last_calc_results:
-        results_data = st.session_state.last_calc_results
-        res_fine_plot = results_data.get('res_fine')
-        active_targets_plot = validate_targets()
-        mse_plot = st.session_state.last_mse
-        method_name_plot = results_data.get('method_name', '')
-        res_optim_grid_plot = results_data.get('res_optim_grid')
-        if res_fine_plot and active_targets_plot is not None:
-            fig_spec, ax_spec = plt.subplots(figsize=(12, 4)) 
-            opt_method_str = f" ({method_name_plot})" if method_name_plot else ""
-            window_title = f'Spectral Response {"Optimized" if st.session_state.is_optimized_state else "Nominal"}{opt_method_str}'
-            fig_spec.suptitle(window_title, fontsize=12, weight='bold')
-            line_ts = None
-            try:
-                if res_fine_plot and 'l' in res_fine_plot and 'Ts' in res_fine_plot and res_fine_plot['l'] is not None and len(res_fine_plot['l']) > 0:
-                    res_l_plot = np.asarray(res_fine_plot['l'])
-                    res_ts_plot = np.asarray(res_fine_plot['Ts'])
-                    line_ts, = ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
-                    plotted_target_label = False
-                    if active_targets_plot:
-                        for i, target in enumerate(active_targets_plot):
-                            l_min, l_max = target['min'], target['max']
-                            t_min, t_max_corr = target['target_min'], target['target_max']
-                            x_coords, y_coords = [l_min, l_max], [t_min, t_max_corr]
-                            label = 'Target(s)' if not plotted_target_label else "_nolegend_"
-                            line_target, = ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
-                            marker_target = ax_spec.plot(x_coords, y_coords, marker='x', color='red', markersize=6, linestyle='none', label='_nolegend_', zorder=6)
-                            plotted_target_label = True
-                            if res_optim_grid_plot and 'l' in res_optim_grid_plot and res_optim_grid_plot['l'].size > 0:
-                                res_l_optim = np.asarray(res_optim_grid_plot['l'])
-                                indices_optim = np.where((res_l_optim >= l_min) & (res_l_optim <= l_max))[0]
-                                if indices_optim.size > 0:
-                                    optim_lambdas = res_l_optim[indices_optim]
-                                    if abs(l_max - l_min) < 1e-9: optim_target_t = np.full_like(optim_lambdas, t_min)
-                                    else: slope = (t_max_corr - t_min) / (l_max - l_min); optim_target_t = t_min + slope * (optim_lambdas - l_min)
-                                    ax_spec.plot(optim_lambdas, optim_target_t, marker='.', color='darkred', linestyle='none', markersize=4, alpha=0.5, label='_nolegend_', zorder=6)
-                ax_spec.set_xlabel("Wavelength (nm)")
-                ax_spec.set_ylabel('Transmittance')
-                ax_spec.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
-                ax_spec.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
-                ax_spec.minorticks_on()
-                if len(res_l_plot) > 0 : ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
-                ax_spec.set_ylim(-0.05, 1.05)
-                if plotted_target_label or (line_ts is not None): ax_spec.legend(fontsize=8)
-                if mse_plot is not None and np.isfinite(mse_plot): mse_text = f"MSE = {mse_plot:.3e}"
-                else: mse_text = "MSE: N/A"
-                ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
-                                 bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
-            except Exception as e_spec:
-                ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
-            plt.tight_layout(rect=[0, 0, 1, 0.93])
-            st.pyplot(fig_spec)
-            plt.close(fig_spec)
-        else:
-            st.warning("Missing or invalid calculation data for spectrum display.")
-    else:
-        st.info("Run an evaluation or optimization to see results.")
-    plot_col1, plot_col2 = st.columns(2)
-    if 'last_calc_results' in st.session_state and st.session_state.last_calc_results:
-        results_data = st.session_state.last_calc_results
-        ep_plot = results_data.get('ep_used')
-        l0_plot = results_data.get('l0_used')
-        nH_plot = results_data.get('nH_used')
-        nL_plot = results_data.get('nL_used')
-        nSub_plot = results_data.get('nSub_used')
-        is_optimized_plot = st.session_state.is_optimized_state
-        
-        if ep_plot is not None and l0_plot is not None and nH_plot is not None and nL_plot is not None and nSub_plot is not None:
-            with plot_col1:
-                fig_idx, ax_idx = plt.subplots(figsize=(6, 4)) 
+    results_tab, logs_tab = st.tabs(["Résultats", "Logs"])
+    with results_tab:
+        st.subheader("Results")
+        state_desc = "Optimized" if st.session_state.is_optimized_state else "Nominal"
+        ep_display = st.session_state.optimized_ep if st.session_state.is_optimized_state else st.session_state.current_ep
+        num_layers_display = len(ep_display) if ep_display is not None else 0
+        res_info_cols = st.columns(3)
+        with res_info_cols[0]:
+            st.caption(f"State: {state_desc} ({num_layers_display} layers)")
+        with res_info_cols[1]:
+            if st.session_state.last_mse is not None and np.isfinite(st.session_state.last_mse):
+                st.caption(f"MSE: {st.session_state.last_mse:.4e}")
+            else:
+                st.caption("MSE: N/A")
+        with res_info_cols[2]:
+            min_thick_str = "N/A"
+            if ep_display is not None and ep_display.size > 0:
+                valid_thick = ep_display[ep_display >= MIN_THICKNESS_PHYS_NM - 1e-9]
+                if valid_thick.size > 0:
+                    min_thick_str = f"{np.min(valid_thick):.3f} nm"
+            st.caption(f"Min Thick: {min_thick_str}")
+        if st.session_state.is_optimized_state and st.session_state.get('optimized_qwot_str'):
+            st.text_input("Optimized QWOT (at original λ₀)", value=st.session_state.optimized_qwot_str, disabled=True, key="opt_qwot_display_main_res")
+        if 'last_calc_results' in st.session_state and st.session_state.last_calc_results:
+            results_data = st.session_state.last_calc_results
+            res_fine_plot = results_data.get('res_fine')
+            active_targets_plot = validate_targets()
+            mse_plot = st.session_state.last_mse
+            method_name_plot = results_data.get('method_name', '')
+            res_optim_grid_plot = results_data.get('res_optim_grid')
+            if res_fine_plot and active_targets_plot is not None:
+                fig_spec, ax_spec = plt.subplots(figsize=(12, 4)) 
+                opt_method_str = f" ({method_name_plot})" if method_name_plot else ""
+                window_title = f'Spectral Response {"Optimized" if st.session_state.is_optimized_state else "Nominal"}{opt_method_str}'
+                fig_spec.suptitle(window_title, fontsize=12, weight='bold')
+                line_ts = None
                 try:
-                    nH_c_repr, logs_h = _get_nk_at_lambda(nH_plot, l0_plot)
-                    nL_c_repr, logs_l = _get_nk_at_lambda(nL_plot, l0_plot)
-                    nSub_c_repr, logs_s = _get_nk_at_lambda(nSub_plot, l0_plot)
-                    if nH_c_repr is None or nL_c_repr is None or nSub_c_repr is None:
-                        raise ValueError("Indices at l0 not found for profile plot.")
-                    nH_r_repr, nL_r_repr, nSub_r_repr = nH_c_repr.real, nL_c_repr.real, nSub_c_repr.real
-                    num_layers = len(ep_plot)
-                    n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)]
-                    ep_cumulative = np.cumsum(ep_plot) if num_layers > 0 else np.array([0])
-                    total_thickness = ep_cumulative[-1] if num_layers > 0 else 0
-                    margin = max(50, 0.1 * total_thickness) if total_thickness > 0 else 50
-                    x_coords_plot = [-margin]
-                    y_coords_plot = [nSub_r_repr]
-                    if num_layers > 0:
-                        x_coords_plot.append(0)
-                        y_coords_plot.append(nSub_r_repr)
-                        for i in range(num_layers):
-                            layer_start = ep_cumulative[i-1] if i > 0 else 0
-                            layer_end = ep_cumulative[i]
-                            layer_n_real = n_real_layers_repr[i]
-                            x_coords_plot.extend([layer_start, layer_end])
-                            y_coords_plot.extend([layer_n_real, layer_n_real])
-                        last_layer_end = ep_cumulative[-1]
-                        x_coords_plot.extend([last_layer_end, last_layer_end + margin])
-                        y_coords_plot.extend([1.0, 1.0])
-                    else:
-                        x_coords_plot.extend([0, 0, margin])
-                        y_coords_plot.extend([nSub_r_repr, 1.0, 1.0])
-                    ax_idx.plot(x_coords_plot, y_coords_plot, drawstyle='steps-post', label=f'n\'(λ={l0_plot:.0f}nm)', color='purple', linewidth=1.5)
-                    ax_idx.set_xlabel('Depth (from substrate) (nm)')
-                    ax_idx.set_ylabel("Real Part of Index (n')")
-                    ax_idx.set_title(f"Index Profile (at λ={l0_plot:.0f}nm)", fontsize=10)
-                    ax_idx.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
-                    ax_idx.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
-                    ax_idx.minorticks_on()
-                    ax_idx.set_xlim(x_coords_plot[0], x_coords_plot[-1])
-                    valid_n = [n for n in [1.0, nSub_r_repr] + n_real_layers_repr if np.isfinite(n)]
-                    min_n = min(valid_n) if valid_n else 0.9
-                    max_n = max(valid_n) if valid_n else 2.5
-                    y_padding = (max_n - min_n) * 0.1 + 0.05
-                    ax_idx.set_ylim(bottom=min_n - y_padding, top=max_n + y_padding)
-                    if ax_idx.get_legend_handles_labels()[1]: ax_idx.legend(fontsize=8)
-                except Exception as e_idx:
-                    ax_idx.text(0.5, 0.5, f"Error plotting index profile:\n{e_idx}", ha='center', va='center', transform=ax_idx.transAxes, color='red')
-                plt.tight_layout()
-                st.pyplot(fig_idx)
-                plt.close(fig_idx)
-            with plot_col2:
-                fig_stack, ax_stack = plt.subplots(figsize=(6, 4)) 
-                try:
-                    num_layers = len(ep_plot)
-                    if num_layers > 0:
-                        nH_c_repr, _ = _get_nk_at_lambda(nH_plot, l0_plot)
-                        nL_c_repr, _ = _get_nk_at_lambda(nL_plot, l0_plot)
-                        indices_complex_repr = [nH_c_repr if i % 2 == 0 else nL_c_repr for i in range(num_layers)]
-                        layer_types = ["H" if i % 2 == 0 else "L" for i in range(num_layers)]
-                        colors = ['lightblue' if i % 2 == 0 else 'lightcoral' for i in range(num_layers)]
-                        bar_pos = np.arange(num_layers)
-                        bars = ax_stack.barh(bar_pos, ep_plot, align='center', color=colors, edgecolor='grey', height=0.8)
-                        yticks_labels = []
-                        for i in range(num_layers):
-                            n_comp_repr = indices_complex_repr[i] if indices_complex_repr and i < len(indices_complex_repr) else complex(0,0)
-                            layer_type = layer_types[i] if layer_types and i < len(layer_types) else '?'
-                            n_str = f"{n_comp_repr.real:.3f}" if np.isfinite(n_comp_repr.real) else "N/A"
-                            k_val = n_comp_repr.imag
-                            if np.isfinite(k_val) and abs(k_val) > 1e-6: n_str += f"{k_val:+.3f}j"
-                            yticks_labels.append(f"L{i + 1} ({layer_type}) n≈{n_str}")
-                        ax_stack.set_yticks(bar_pos)
-                        ax_stack.set_yticklabels(yticks_labels, fontsize=7)
-                        ax_stack.invert_yaxis()
-                        max_ep_plot_val = max(ep_plot) if ep_plot.size > 0 else 1.0
-                        fontsize_bar = max(6, 9 - num_layers // 15)
-                        for i, bar in enumerate(bars):
-                            width = bar.get_width()
-                            ha_pos = 'left' if width < max_ep_plot_val * 0.3 else 'right'
-                            x_text_pos = width * 1.02 if ha_pos == 'left' else width * 0.98
-                            text_color = 'black' if ha_pos == 'left' else 'white'
-                            ax_stack.text(x_text_pos, bar.get_y() + bar.get_height()/2., f"{width:.2f}",
-                                          va='center', ha=ha_pos, color=text_color, fontsize=fontsize_bar, weight='bold')
-                    else:
-                        ax_stack.text(0.5, 0.5, "Empty Structure", ha='center', va='center', fontsize=10, color='grey', transform=ax_stack.transAxes)
-                        ax_stack.set_yticks([]); ax_stack.set_xticks([])
-                    ax_stack.set_xlabel('Thickness (nm)')
-                    stack_title_prefix = f'Structure {"Optimized" if is_optimized_plot else "Nominal"}'
-                    ax_stack.set_title(f"{stack_title_prefix} ({num_layers} layers)", fontsize=10)
-                    max_ep_plot_val_xlim = max(ep_plot) if num_layers > 0 and ep_plot.size > 0 else 10
-                    ax_stack.set_xlim(right=max_ep_plot_val_xlim * 1.1)
-                except Exception as e_stack:
-                    ax_stack.text(0.5, 0.5, f"Error plotting structure:\n{e_stack}", ha='center', va='center', transform=ax_stack.transAxes, color='red')
-                plt.tight_layout()
-                st.pyplot(fig_stack)
-                plt.close(fig_stack)
+                    if res_fine_plot and 'l' in res_fine_plot and 'Ts' in res_fine_plot and res_fine_plot['l'] is not None and len(res_fine_plot['l']) > 0:
+                        res_l_plot = np.asarray(res_fine_plot['l'])
+                        res_ts_plot = np.asarray(res_fine_plot['Ts'])
+                        line_ts, = ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
+                        plotted_target_label = False
+                        if active_targets_plot:
+                            for i, target in enumerate(active_targets_plot):
+                                l_min, l_max = target['min'], target['max']
+                                t_min, t_max_corr = target['target_min'], target['target_max']
+                                x_coords, y_coords = [l_min, l_max], [t_min, t_max_corr]
+                                label = 'Target(s)' if not plotted_target_label else "_nolegend_"
+                                line_target, = ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
+                                marker_target = ax_spec.plot(x_coords, y_coords, marker='x', color='red', markersize=6, linestyle='none', label='_nolegend_', zorder=6)
+                                plotted_target_label = True
+                                if res_optim_grid_plot and 'l' in res_optim_grid_plot and res_optim_grid_plot['l'].size > 0:
+                                    res_l_optim = np.asarray(res_optim_grid_plot['l'])
+                                    indices_optim = np.where((res_l_optim >= l_min) & (res_l_optim <= l_max))[0]
+                                    if indices_optim.size > 0:
+                                        optim_lambdas = res_l_optim[indices_optim]
+                                        if abs(l_max - l_min) < 1e-9: optim_target_t = np.full_like(optim_lambdas, t_min)
+                                        else: slope = (t_max_corr - t_min) / (l_max - l_min); optim_target_t = t_min + slope * (optim_lambdas - l_min)
+                                        ax_spec.plot(optim_lambdas, optim_target_t, marker='.', color='darkred', linestyle='none', markersize=4, alpha=0.5, label='_nolegend_', zorder=6)
+                    ax_spec.set_xlabel("Wavelength (nm)")
+                    ax_spec.set_ylabel('Transmittance')
+                    ax_spec.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
+                    ax_spec.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
+                    ax_spec.minorticks_on()
+                    if len(res_l_plot) > 0 : ax_spec.set_xlim(res_l_plot[0], res_l_plot[-1])
+                    if not st.session_state.get('auto_scale_y', False):
+                        ax_spec.set_ylim(-0.05, 1.05)
+                    if plotted_target_label or (line_ts is not None): ax_spec.legend(fontsize=8)
+                    if mse_plot is not None and np.isfinite(mse_plot): mse_text = f"MSE = {mse_plot:.3e}"
+                    else: mse_text = "MSE: N/A"
+                    ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
+                                     bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
+                except Exception as e_spec:
+                    ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
+                plt.tight_layout(rect=[0, 0, 1, 0.93])
+                st.pyplot(fig_spec)
+                plt.close(fig_spec)
+            else:
+                st.warning("Missing or invalid calculation data for spectrum display.")
         else:
-            st.warning("Missing data to display profiles.")
-    else:
-        pass
+            st.info("Run an evaluation or optimization to see results.")
+        plot_col1, plot_col2 = st.columns(2)
+        if 'last_calc_results' in st.session_state and st.session_state.last_calc_results:
+            results_data = st.session_state.last_calc_results
+            ep_plot = results_data.get('ep_used')
+            l0_plot = results_data.get('l0_used')
+            nH_plot = results_data.get('nH_used')
+            nL_plot = results_data.get('nL_used')
+            nSub_plot = results_data.get('nSub_used')
+            is_optimized_plot = st.session_state.is_optimized_state
+            
+            if ep_plot is not None and l0_plot is not None and nH_plot is not None and nL_plot is not None and nSub_plot is not None:
+                with plot_col1:
+                    fig_idx, ax_idx = plt.subplots(figsize=(6, 4)) 
+                    try:
+                        nH_c_repr, logs_h = _get_nk_at_lambda(nH_plot, l0_plot)
+                        nL_c_repr, logs_l = _get_nk_at_lambda(nL_plot, l0_plot)
+                        nSub_c_repr, logs_s = _get_nk_at_lambda(nSub_plot, l0_plot)
+                        if nH_c_repr is None or nL_c_repr is None or nSub_c_repr is None:
+                            raise ValueError("Indices at l0 not found for profile plot.")
+                        nH_r_repr, nL_r_repr, nSub_r_repr = nH_c_repr.real, nL_c_repr.real, nSub_c_repr.real
+                        num_layers = len(ep_plot)
+                        n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)]
+                        ep_cumulative = np.cumsum(ep_plot) if num_layers > 0 else np.array([0])
+                        total_thickness = ep_cumulative[-1] if num_layers > 0 else 0
+                        margin = max(50, 0.1 * total_thickness) if total_thickness > 0 else 50
+                        x_coords_plot = [-margin]
+                        y_coords_plot = [nSub_r_repr]
+                        if num_layers > 0:
+                            x_coords_plot.append(0)
+                            y_coords_plot.append(nSub_r_repr)
+                            for i in range(num_layers):
+                                layer_start = ep_cumulative[i-1] if i > 0 else 0
+                                layer_end = ep_cumulative[i]
+                                layer_n_real = n_real_layers_repr[i]
+                                x_coords_plot.extend([layer_start, layer_end])
+                                y_coords_plot.extend([layer_n_real, layer_n_real])
+                            last_layer_end = ep_cumulative[-1]
+                            x_coords_plot.extend([last_layer_end, last_layer_end + margin])
+                            y_coords_plot.extend([1.0, 1.0])
+                        else:
+                            x_coords_plot.extend([0, 0, margin])
+                            y_coords_plot.extend([nSub_r_repr, 1.0, 1.0])
+                        ax_idx.plot(x_coords_plot, y_coords_plot, drawstyle='steps-post', label=f'n\'(λ={l0_plot:.0f}nm)', color='purple', linewidth=1.5)
+                        ax_idx.set_xlabel('Depth (from substrate) (nm)')
+                        ax_idx.set_ylabel("Real Part of Index (n')")
+                        ax_idx.set_title(f"Index Profile (at λ={l0_plot:.0f}nm)", fontsize=10)
+                        ax_idx.grid(True, which='major', linestyle='-', linewidth='0.5', color='gray')
+                        ax_idx.grid(True, which='minor', linestyle=':', linewidth='0.5', color='lightgray')
+                        ax_idx.minorticks_on()
+                        ax_idx.set_xlim(x_coords_plot[0], x_coords_plot[-1])
+                        valid_n = [n for n in [1.0, nSub_r_repr] + n_real_layers_repr if np.isfinite(n)]
+                        min_n = min(valid_n) if valid_n else 0.9
+                        max_n = max(valid_n) if valid_n else 2.5
+                        y_padding = (max_n - min_n) * 0.1 + 0.05
+                        ax_idx.set_ylim(bottom=min_n - y_padding, top=max_n + y_padding)
+                        if ax_idx.get_legend_handles_labels()[1]: ax_idx.legend(fontsize=8)
+                    except Exception as e_idx:
+                        ax_idx.text(0.5, 0.5, f"Error plotting index profile:\n{e_idx}", ha='center', va='center', transform=ax_idx.transAxes, color='red')
+                    plt.tight_layout()
+                    st.pyplot(fig_idx)
+                    plt.close(fig_idx)
+                with plot_col2:
+                    fig_stack, ax_stack = plt.subplots(figsize=(6, 4)) 
+                    try:
+                        num_layers = len(ep_plot)
+                        if num_layers > 0:
+                            nH_c_repr, _ = _get_nk_at_lambda(nH_plot, l0_plot)
+                            nL_c_repr, _ = _get_nk_at_lambda(nL_plot, l0_plot)
+                            indices_complex_repr = [nH_c_repr if i % 2 == 0 else nL_c_repr for i in range(num_layers)]
+                            layer_types = ["H" if i % 2 == 0 else "L" for i in range(num_layers)]
+                            colors = ['lightblue' if i % 2 == 0 else 'lightcoral' for i in range(num_layers)]
+                            bar_pos = np.arange(num_layers)
+                            bars = ax_stack.barh(bar_pos, ep_plot, align='center', color=colors, edgecolor='grey', height=0.8)
+                            yticks_labels = []
+                            for i in range(num_layers):
+                                n_comp_repr = indices_complex_repr[i] if indices_complex_repr and i < len(indices_complex_repr) else complex(0,0)
+                                layer_type = layer_types[i] if layer_types and i < len(layer_types) else '?'
+                                n_str = f"{n_comp_repr.real:.3f}" if np.isfinite(n_comp_repr.real) else "N/A"
+                                k_val = n_comp_repr.imag
+                                if np.isfinite(k_val) and abs(k_val) > 1e-6: n_str += f"{k_val:+.3f}j"
+                                yticks_labels.append(f"L{i + 1} ({layer_type}) n≈{n_str}")
+                            ax_stack.set_yticks(bar_pos)
+                            ax_stack.set_yticklabels(yticks_labels, fontsize=7)
+                            ax_stack.invert_yaxis()
+                            max_ep_plot_val = max(ep_plot) if ep_plot.size > 0 else 1.0
+                            fontsize_bar = max(6, 9 - num_layers // 15)
+                            for i, bar in enumerate(bars):
+                                width = bar.get_width()
+                                ha_pos = 'left' if width < max_ep_plot_val * 0.3 else 'right'
+                                x_text_pos = width * 1.02 if ha_pos == 'left' else width * 0.98
+                                text_color = 'black' if ha_pos == 'left' else 'white'
+                                ax_stack.text(x_text_pos, bar.get_y() + bar.get_height()/2., f"{width:.2f}",
+                                              va='center', ha=ha_pos, color=text_color, fontsize=fontsize_bar, weight='bold')
+                        else:
+                            ax_stack.text(0.5, 0.5, "Empty Structure", ha='center', va='center', fontsize=10, color='grey', transform=ax_stack.transAxes)
+                            ax_stack.set_yticks([]); ax_stack.set_xticks([])
+                        ax_stack.set_xlabel('Thickness (nm)')
+                        stack_title_prefix = f'Structure {"Optimized" if is_optimized_plot else "Nominal"}'
+                        ax_stack.set_title(f"{stack_title_prefix} ({num_layers} layers)", fontsize=10)
+                        max_ep_plot_val_xlim = max(ep_plot) if num_layers > 0 and ep_plot.size > 0 else 10
+                        ax_stack.set_xlim(right=max_ep_plot_val_xlim * 1.1)
+                    except Exception as e_stack:
+                        ax_stack.text(0.5, 0.5, f"Error plotting structure:\n{e_stack}", ha='center', va='center', transform=ax_stack.transAxes, color='red')
+                    plt.tight_layout()
+                    st.pyplot(fig_stack)
+                    plt.close(fig_stack)
+            else:
+                st.warning("Missing data to display profiles.")
+        else:
+            pass
+    with logs_tab:
+        st.subheader("Logs")
+        with st.expander("Show Logs", expanded=False):
+            st.code("\n".join(st.session_state.get('log_messages', [])), language='text')
 
 if st.session_state.get('needs_rerun_calc', False):
     params = st.session_state.rerun_calc_params
