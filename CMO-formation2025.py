@@ -831,6 +831,7 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
     calc_type = 'Optimized' if is_optimized_run else 'Nominal'
     st.session_state.last_calc_results = {}
     st.session_state.last_rmse = None
+    st.session_state.monte_carlo_results = None # Clear previous MC results
     with st.spinner(f"{calc_type} calculation in progress..."):
         try:
             active_targets = validate_targets()
@@ -1275,6 +1276,7 @@ def run_monte_carlo_wrapper(container):
                 l_vec = base_results['res_fine']['l']
                 std_dev = st.session_state.monte_carlo_std_dev
                 num_draws = 100
+                active_targets = validate_targets()
                 
                 # Pre-calculate n,k arrays
                 nH_arr, _ = _get_nk_array_for_lambda_vec(nH_mat, l_vec)
@@ -1304,6 +1306,17 @@ def run_monte_carlo_wrapper(container):
                 # Run all calculations in a single batch call
                 all_ts_results = np.array(vmap_calculate_T(jnp.array(perturbed_eps), nH_arr, nL_arr, nSub_arr, l_vec))
 
+                # Calculate RMSE for each run
+                all_rmses = []
+                if active_targets:
+                    for i in range(num_draws):
+                        res_temp = {'l': l_vec, 'Ts': all_ts_results[i]}
+                        rmse, _ = calculate_final_rmse(res_temp, active_targets)
+                        if rmse is not None:
+                            all_rmses.append(rmse)
+                
+                plausible_rmse = np.percentile(all_rmses, 80) if all_rmses else None
+
                 # Calculate confidence interval
                 lower_bound = np.percentile(all_ts_results, 10, axis=0)
                 upper_bound = np.percentile(all_ts_results, 90, axis=0)
@@ -1314,7 +1327,8 @@ def run_monte_carlo_wrapper(container):
                     'base_ts': base_results['res_fine']['Ts'],
                     'lower_bound': lower_bound,
                     'upper_bound': upper_bound,
-                    'std_dev': std_dev
+                    'std_dev': std_dev,
+                    'plausible_rmse': plausible_rmse
                 }
                 add_log("Monte Carlo simulation finished.")
 
@@ -1613,6 +1627,10 @@ with main_layout[1]:
         
         if 'monte_carlo_results' in st.session_state and st.session_state.monte_carlo_results:
             mc_data = st.session_state.monte_carlo_results
+            plausible_rmse = mc_data.get('plausible_rmse')
+            if plausible_rmse is not None:
+                st.metric(label="RMSE Plausible (80% des cas)", value=f"{plausible_rmse:.4e}")
+            
             fig, ax = plt.subplots(figsize=(12, 5))
             ax.plot(mc_data['l_vec'], mc_data['base_ts'], color='red', linewidth=2, label='Réponse Idéale', zorder=3)
             ax.scatter(np.tile(mc_data['l_vec'], 100), mc_data['all_ts_results'].flatten(), color='lightgray', alpha=0.2, s=2, zorder=1)
