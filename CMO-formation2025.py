@@ -1337,6 +1337,95 @@ def run_monte_carlo_wrapper(container):
                 add_log(f"FATAL ERROR during Monte Carlo: {e}")
                 traceback.print_exc()
 
+def run_tolerance_analysis_wrapper(container):
+    with container:
+        if 'last_calc_results' not in st.session_state or not st.session_state.last_calc_results:
+            st.warning("Veuillez d'abord calculer une structure de base dans l'onglet 'Résultats'.")
+            return
+
+        with st.spinner("Lancement de l'analyse de tolérance..."):
+            try:
+                base_results = st.session_state.last_calc_results
+                ep_base = base_results.get('ep_used')
+                if ep_base is None or ep_base.size == 0:
+                    st.error("Aucune structure de base à analyser.")
+                    return
+                
+                nH_mat = base_results['nH_used']
+                nL_mat = base_results['nL_used']
+                nSub_mat = base_results['nSub_used']
+                active_targets = validate_targets()
+                if not active_targets:
+                    st.error("L'analyse de tolérance nécessite des cibles actives pour calculer le RMSE.")
+                    return
+
+                l_min_plot, l_max_plot = get_lambda_range_from_targets(active_targets)
+                l_vec = np.geomspace(l_min_plot, l_max_plot, 100)
+                
+                std_devs_abs = [0, 0.2, 0.5, 1, 2, 3, 5]
+                std_devs_rel = [0, 1, 2, 3, 5, 10]
+                num_draws = 100
+                
+                plausible_rmses_abs = []
+                plausible_rmses_rel = []
+
+                # JAX-compatible calculation function
+                @jax.jit
+                def get_spectrum_for_one_ep(ep_vector, nH, nL, nSub, lambdas):
+                    ep_vector_jnp = jnp.asarray(ep_vector)
+                    num_layers = len(ep_vector_jnp)
+                    indices_alternating = jnp.where(jnp.arange(num_layers)[:, None] % 2 == 0, nH, nL)
+                    indices_alternating_T = indices_alternating.T
+                    Ts_arr_raw = vmap(calculate_single_wavelength_T_core, in_axes=(0, None, 0, 0))(
+                        lambdas, ep_vector_jnp, indices_alternating_T, nSub
+                    )
+                    Ts_arr = jnp.nan_to_num(Ts_arr_raw, nan=0.0)
+                    return jnp.clip(Ts_arr, 0.0, 1.0)
+                
+                vmap_calculate_T = jax.vmap(get_spectrum_for_one_ep, in_axes=(0, None, None, None, None))
+                
+                nH_arr, _ = _get_nk_array_for_lambda_vec(nH_mat, l_vec)
+                nL_arr, _ = _get_nk_array_for_lambda_vec(nL_mat, l_vec)
+                nSub_arr, _ = _get_nk_array_for_lambda_vec(nSub_mat, l_vec)
+
+                # Absolute error analysis
+                for std_dev in std_devs_abs:
+                    noise = np.random.normal(0, std_dev, (num_draws, len(ep_base)))
+                    perturbed_eps = ep_base + noise
+                    perturbed_eps = np.maximum(perturbed_eps, MIN_THICKNESS_PHYS_NM)
+                    all_ts_results = np.array(vmap_calculate_T(jnp.array(perturbed_eps), nH_arr, nL_arr, nSub_arr, l_vec))
+                    
+                    all_rmses = [calculate_final_rmse({'l': l_vec, 'Ts': ts}, active_targets)[0] for ts in all_ts_results]
+                    all_rmses = [r for r in all_rmses if r is not None]
+                    plausible_rmses_abs.append(np.percentile(all_rmses, 80) if all_rmses else 0)
+
+                # Relative error analysis
+                for std_dev_percent in std_devs_rel:
+                    std_dev_values = ep_base * (std_dev_percent / 100.0)
+                    noise = np.random.normal(0, 1, (num_draws, len(ep_base))) * std_dev_values
+                    perturbed_eps = ep_base + noise
+                    perturbed_eps = np.maximum(perturbed_eps, MIN_THICKNESS_PHYS_NM)
+                    all_ts_results = np.array(vmap_calculate_T(jnp.array(perturbed_eps), nH_arr, nL_arr, nSub_arr, l_vec))
+
+                    all_rmses = [calculate_final_rmse({'l': l_vec, 'Ts': ts}, active_targets)[0] for ts in all_ts_results]
+                    all_rmses = [r for r in all_rmses if r is not None]
+                    plausible_rmses_rel.append(np.percentile(all_rmses, 80) if all_rmses else 0)
+
+                # Store results for plotting
+                st.session_state.tolerance_analysis_results = {
+                    'std_devs_abs': std_devs_abs,
+                    'plausible_rmses_abs': plausible_rmses_abs,
+                    'std_devs_rel': std_devs_rel,
+                    'plausible_rmses_rel': plausible_rmses_rel,
+                }
+                add_log("Tolerance analysis finished.")
+
+            except Exception as e:
+                st.error(f"Une erreur est survenue pendant l'analyse de tolérance: {e}")
+                add_log(f"FATAL ERROR during tolerance analysis: {e}")
+                traceback.print_exc()
+
+
 st.set_page_config(layout="wide", page_title="formation_CMO_2025")
 if 'init_done' not in st.session_state:
     st.session_state.log_messages = []
@@ -1352,6 +1441,7 @@ if 'init_done' not in st.session_state:
     st.session_state.rerun_calc_params = {}
     st.session_state.action = None
     st.session_state.monte_carlo_results = None
+    st.session_state.tolerance_analysis_results = None
 
     st.session_state.l0 = 500.0
     st.session_state.l_step = 10.0
@@ -1452,7 +1542,7 @@ with main_layout[0]:
         st.session_state.targets[i]['target_max'] = cols[4].number_input(f"Tmax Target {i+1}", value=target.get('target_max', 0.0), min_value=0.0, max_value=1.0, format="%.3f", step=0.01, key=f"target_tmax_{i}_main", label_visibility="collapsed", on_change=trigger_nominal_recalc)
 
 with main_layout[1]: 
-    results_tab, random_draws_tab, logs_tab = st.tabs(["**Résultats**", "**Tirages Aléatoires**", "**Logs**"])
+    results_tab, random_draws_tab, tolerance_tab, logs_tab = st.tabs(["**Résultats**", "**Tirages Aléatoires**", "**Analyse de Tolérance**", "**Logs**"])
     with results_tab:
         st.subheader("Actions")
         menu_cols = st.columns(6)
@@ -1644,6 +1734,34 @@ with main_layout[1]:
                 ax.set_ylim(-0.05, 1.05)
             st.pyplot(fig)
             plt.close(fig)
+    
+    with tolerance_tab:
+        st.subheader("Analyse de Tolérance")
+        if st.button("Lancer l'analyse de tolérance", key="run_tolerance"):
+            st.session_state.action = 'tolerance_analysis'
+            st.rerun()
+        
+        if 'tolerance_analysis_results' in st.session_state and st.session_state.tolerance_analysis_results:
+            tol_data = st.session_state.tolerance_analysis_results
+            fig, ax1 = plt.subplots(figsize=(12, 5))
+            
+            color1 = 'tab:blue'
+            ax1.set_xlabel('Écart-type absolu (nm)', color=color1)
+            ax1.set_ylabel('RMSE Plausible (80%)', color=color1)
+            ax1.plot(tol_data['std_devs_abs'], tol_data['plausible_rmses_abs'], color=color1, marker='o', label='Erreur Absolue')
+            ax1.tick_params(axis='x', labelcolor=color1)
+            ax1.tick_params(axis='y', labelcolor=color1)
+            ax1.grid(True, linestyle=':', color=color1, alpha=0.5)
+
+            ax2 = ax1.twiny()
+            color2 = 'tab:orange'
+            ax2.set_xlabel('Écart-type relatif (%)', color=color2)
+            ax2.plot(tol_data['std_devs_rel'], tol_data['plausible_rmses_rel'], color=color2, marker='x', label='Erreur Relative')
+            ax2.tick_params(axis='x', labelcolor=color2)
+            
+            fig.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
 
 
     with logs_tab:
@@ -1667,7 +1785,9 @@ if action_to_run:
         run_remove_thin_wrapper()
     elif action_to_run == 'monte_carlo':
         run_monte_carlo_wrapper(random_draws_tab)
-        st.rerun() # Rerun to display the plot from session state
+    elif action_to_run == 'tolerance_analysis':
+        run_tolerance_analysis_wrapper(tolerance_tab)
+    st.rerun()
 
 if st.session_state.get('needs_rerun_calc', False):
     params = st.session_state.rerun_calc_params
