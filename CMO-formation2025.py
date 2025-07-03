@@ -1396,8 +1396,6 @@ with main_layout[1]:
         
         st.divider()
         
-        progress_container = st.container()
-        
         if st.session_state.get('last_calc_results'):
             st.subheader("Final Results")
             results_data = st.session_state.last_calc_results
@@ -1545,7 +1543,7 @@ if action_to_run:
         st.session_state.needs_rerun_calc = True
         st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (Evaluated)"}
     elif action_to_run == 'opt_local':
-        run_local_optimization_wrapper(progress_container)
+        run_local_optimization_wrapper()
         st.session_state.needs_rerun_calc = True
     elif action_to_run == 'needle':
         run_needle_wrapper()
