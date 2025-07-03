@@ -1253,6 +1253,74 @@ def run_remove_thin_wrapper():
         finally:
             pass
 
+def run_monte_carlo_wrapper(container):
+    with container:
+        if 'last_calc_results' not in st.session_state or not st.session_state.last_calc_results:
+            st.warning("Veuillez d'abord calculer une structure de base dans l'onglet 'Résultats'.")
+            return
+
+        with st.spinner("Lancement de la simulation Monte-Carlo..."):
+            try:
+                # Get base data from the last calculation
+                base_results = st.session_state.last_calc_results
+                ep_base = base_results.get('ep_used')
+                if ep_base is None or ep_base.size == 0:
+                    st.error("Aucune structure de base à simuler. Veuillez d'abord évaluer une conception.")
+                    return
+
+                nH_mat = base_results['nH_used']
+                nL_mat = base_results['nL_used']
+                nSub_mat = base_results['nSub_used']
+                l_vec = base_results['res_fine']['l']
+                std_dev = st.session_state.monte_carlo_std_dev
+                num_draws = 100
+                
+                all_ts_results = []
+                
+                # JAX function for batch calculation
+                vmap_calculate_T = jax.vmap(
+                    lambda ep: calculate_T_from_ep_jax(ep, nH_mat, nL_mat, nSub_mat, l_vec)[0]['Ts']
+                )
+
+                # Generate all random structures at once
+                noise = np.random.normal(0, std_dev, (num_draws, len(ep_base)))
+                perturbed_eps = ep_base + noise
+                perturbed_eps = np.maximum(perturbed_eps, MIN_THICKNESS_PHYS_NM) # Ensure no negative thickness
+
+                # Run all calculations in a batch
+                all_ts_results = np.array(vmap_calculate_T(jnp.array(perturbed_eps)))
+
+                # Calculate confidence interval
+                lower_bound = np.percentile(all_ts_results, 10, axis=0)
+                upper_bound = np.percentile(all_ts_results, 90, axis=0)
+
+                # Plotting
+                fig, ax = plt.subplots(figsize=(12, 5))
+                ax.plot(l_vec, base_results['res_fine']['Ts'], color='red', linewidth=2, label='Réponse Idéale', zorder=3)
+                
+                # Scatter plot for all runs
+                for i in range(num_draws):
+                    ax.scatter(l_vec, all_ts_results[i], color='lightgray', alpha=0.2, s=2, zorder=1)
+
+                # Confidence interval corridor
+                ax.fill_between(l_vec, lower_bound, upper_bound, color='blue', alpha=0.3, label='Intervalle de confiance à 80%', zorder=2)
+                
+                ax.set_xlabel("Wavelength (nm)")
+                ax.set_ylabel("Transmittance")
+                ax.set_title(f"Simulation de Monte-Carlo (100 tirages, Écart-type: {std_dev} nm)")
+                ax.legend()
+                ax.grid(True, linestyle=':')
+                if not st.session_state.get('auto_scale_y', False):
+                    ax.set_ylim(-0.05, 1.05)
+                st.pyplot(fig)
+                plt.close(fig)
+                add_log("Monte Carlo simulation finished.")
+
+            except Exception as e:
+                st.error(f"Une erreur est survenue pendant la simulation Monte-Carlo: {e}")
+                add_log(f"FATAL ERROR during Monte Carlo: {e}")
+                traceback.print_exc()
+
 st.set_page_config(layout="wide", page_title="formation_CMO_2025")
 if 'init_done' not in st.session_state:
     st.session_state.log_messages = []
@@ -1559,7 +1627,8 @@ if action_to_run:
         run_needle_wrapper()
     elif action_to_run == 'remove_thin':
         run_remove_thin_wrapper()
-    # Monte Carlo is handled separately below to draw in its own tab
+    elif action_to_run == 'monte_carlo':
+        run_monte_carlo_wrapper(random_draws_tab)
     st.rerun()
 
 if st.session_state.get('needs_rerun_calc', False):
