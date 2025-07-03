@@ -1275,20 +1275,33 @@ def run_monte_carlo_wrapper(container):
                 std_dev = st.session_state.monte_carlo_std_dev
                 num_draws = 100
                 
-                all_ts_results = []
-                
-                # JAX function for batch calculation
-                vmap_calculate_T = jax.vmap(
-                    lambda ep: calculate_T_from_ep_jax(ep, nH_mat, nL_mat, nSub_mat, l_vec)[0]['Ts']
-                )
+                # Pre-calculate n,k arrays
+                nH_arr, _ = _get_nk_array_for_lambda_vec(nH_mat, l_vec)
+                nL_arr, _ = _get_nk_array_for_lambda_vec(nL_mat, l_vec)
+                nSub_arr, _ = _get_nk_array_for_lambda_vec(nSub_mat, l_vec)
+
+                @jax.jit
+                def get_spectrum_for_one_ep(ep_vector, nH, nL, nSub, lambdas):
+                    ep_vector_jnp = jnp.asarray(ep_vector)
+                    num_layers = len(ep_vector_jnp)
+                    indices_alternating = jnp.where(jnp.arange(num_layers)[:, None] % 2 == 0, nH, nL)
+                    indices_alternating_T = indices_alternating.T
+                    
+                    Ts_arr_raw = vmap(calculate_single_wavelength_T_core, in_axes=(0, None, 0, 0))(
+                        lambdas, ep_vector_jnp, indices_alternating_T, nSub
+                    )
+                    Ts_arr = jnp.nan_to_num(Ts_arr_raw, nan=0.0)
+                    return jnp.clip(Ts_arr, 0.0, 1.0)
+
+                vmap_calculate_T = jax.vmap(get_spectrum_for_one_ep, in_axes=(0, None, None, None, None))
 
                 # Generate all random structures at once
                 noise = np.random.normal(0, std_dev, (num_draws, len(ep_base)))
                 perturbed_eps = ep_base + noise
                 perturbed_eps = np.maximum(perturbed_eps, MIN_THICKNESS_PHYS_NM) # Ensure no negative thickness
 
-                # Run all calculations in a batch
-                all_ts_results = np.array(vmap_calculate_T(jnp.array(perturbed_eps)))
+                # Run all calculations in a single batch call
+                all_ts_results = np.array(vmap_calculate_T(jnp.array(perturbed_eps), nH_arr, nL_arr, nSub_arr, l_vec))
 
                 # Calculate confidence interval
                 lower_bound = np.percentile(all_ts_results, 10, axis=0)
@@ -1299,8 +1312,7 @@ def run_monte_carlo_wrapper(container):
                 ax.plot(l_vec, base_results['res_fine']['Ts'], color='red', linewidth=2, label='Réponse Idéale', zorder=3)
                 
                 # Scatter plot for all runs
-                for i in range(num_draws):
-                    ax.scatter(l_vec, all_ts_results[i], color='lightgray', alpha=0.2, s=2, zorder=1)
+                ax.scatter(np.tile(l_vec, num_draws), all_ts_results.flatten(), color='lightgray', alpha=0.2, s=2, zorder=1)
 
                 # Confidence interval corridor
                 ax.fill_between(l_vec, lower_bound, upper_bound, color='blue', alpha=0.3, label='Intervalle de confiance à 80%', zorder=2)
