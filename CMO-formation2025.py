@@ -929,7 +929,8 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
                 st.session_state.last_rmse = None
             st.session_state.is_optimized_state = is_optimized_run
             if not is_optimized_run:
-                clear_optimized_state()
+                st.session_state.optimized_ep = None
+                st.session_state.optimized_qwot_str = ""
                 st.session_state.current_ep = ep_to_calculate.copy() if ep_to_calculate is not None else None
             add_log(f"{calc_type} calculation finished.")
         except (ValueError, RuntimeError, TypeError) as e:
