@@ -323,9 +323,111 @@ def calculate_mse_for_optimization_penalized_jax(ep_vector: jnp.ndarray,
     final_cost = mse + penalty_cost
     return jnp.nan_to_num(final_cost, nan=jnp.inf, posinf=jnp.inf)
 
+def update_progress_plots(ep_vector: np.ndarray, validated_inputs: Dict, active_targets: List[Dict], placeholders: Dict, iter_num: int):
+    l_min_plot = validated_inputs['l_range_deb']
+    l_max_plot = validated_inputs['l_range_fin']
+    nH_mat = validated_inputs['nH_material']
+    nL_mat = validated_inputs['nL_material']
+    nSub_mat = validated_inputs['nSub_material']
+    l0_plot = validated_inputs['l0']
+
+    num_plot_points = 401
+    l_vec_plot = np.linspace(l_min_plot, l_max_plot, num_plot_points)
+    results_fine, _ = calculate_T_from_ep_jax(ep_vector, nH_mat, nL_mat, nSub_mat, l_vec_plot)
+    
+    mse = None
+    if active_targets:
+        num_pts_mse = 100
+        l_vec_mse = np.geomspace(l_min_plot, l_max_plot, num_pts_mse)
+        results_mse_grid, _ = calculate_T_from_ep_jax(ep_vector, nH_mat, nL_mat, nSub_mat, l_vec_mse)
+        if results_mse_grid:
+            mse, _ = calculate_final_mse(results_mse_grid, active_targets)
+
+    placeholders['status'].markdown(f"**Iteration: {iter_num}** | **MSE: {mse:.4e if mse is not None else 'N/A'}**")
+
+    fig_spec, ax_spec = plt.subplots(figsize=(12, 4))
+    try:
+        if results_fine and 'l' in results_fine and 'Ts' in results_fine and results_fine['l'] is not None and len(results_fine['l']) > 0:
+            res_l_plot = np.asarray(results_fine['l'])
+            res_ts_plot = np.asarray(results_fine['Ts'])
+            ax_spec.plot(res_l_plot, res_ts_plot, label='Transmittance', linestyle='-', color='blue', linewidth=1.5)
+            plotted_target_label = False
+            if active_targets:
+                for i, target in enumerate(active_targets):
+                    l_min, l_max, t_min, t_max_corr = target['min'], target['max'], target['target_min'], target['target_max']
+                    x_coords, y_coords = [l_min, l_max], [t_min, t_max_corr]
+                    label = 'Target(s)' if not plotted_target_label else "_nolegend_"
+                    ax_spec.plot(x_coords, y_coords, 'r--', linewidth=1.0, alpha=0.7, label=label, zorder=5)
+                    plotted_target_label = True
+        ax_spec.set_xlabel("Wavelength (nm)")
+        ax_spec.set_ylabel('Transmittance')
+        ax_spec.grid(True, which='both', linestyle=':')
+        ax_spec.set_xlim(l_min_plot, l_max_plot)
+        ax_spec.set_ylim(-0.05, 1.05)
+        ax_spec.legend(fontsize=8)
+        ax_spec.set_title(f"Réponse spectrale (Itération {iter_num})", fontsize=10)
+    except Exception as e:
+        ax_spec.text(0.5, 0.5, f"Erreur de tracé:\n{e}", ha='center', va='center')
+    plt.tight_layout()
+    placeholders['spec'].pyplot(fig_spec)
+    plt.close(fig_spec)
+
+    fig_idx, ax_idx = plt.subplots(figsize=(6, 4))
+    try:
+        nH_c_repr, _ = _get_nk_at_lambda(nH_mat, l0_plot)
+        nL_c_repr, _ = _get_nk_at_lambda(nL_mat, l0_plot)
+        nSub_c_repr, _ = _get_nk_at_lambda(nSub_mat, l0_plot)
+        nH_r_repr, nL_r_repr, nSub_r_repr = nH_c_repr.real, nL_c_repr.real, nSub_c_repr.real
+        num_layers = len(ep_vector)
+        n_real_layers_repr = [nH_r_repr if i % 2 == 0 else nL_r_repr for i in range(num_layers)]
+        ep_cumulative = np.cumsum(ep_vector) if num_layers > 0 else np.array([0])
+        total_thickness = ep_cumulative[-1] if num_layers > 0 else 0
+        margin = max(50, 0.1 * total_thickness) if total_thickness > 0 else 50
+        x_coords_plot, y_coords_plot = [-margin], [nSub_r_repr]
+        if num_layers > 0:
+            x_coords_plot.append(0); y_coords_plot.append(nSub_r_repr)
+            for i in range(num_layers):
+                layer_start = ep_cumulative[i-1] if i > 0 else 0
+                layer_end = ep_cumulative[i]
+                x_coords_plot.extend([layer_start, layer_end]); y_coords_plot.extend([n_real_layers_repr[i], n_real_layers_repr[i]])
+            x_coords_plot.extend([ep_cumulative[-1], ep_cumulative[-1] + margin]); y_coords_plot.extend([1.0, 1.0])
+        else:
+            x_coords_plot.extend([0, 0, margin]); y_coords_plot.extend([nSub_r_repr, 1.0, 1.0])
+        ax_idx.plot(x_coords_plot, y_coords_plot, drawstyle='steps-post', color='purple')
+        ax_idx.set_xlabel('Profondeur (nm)'); ax_idx.set_ylabel("n'")
+        ax_idx.set_title(f"Profil d'indice (It. {iter_num})", fontsize=10)
+        ax_idx.grid(True, linestyle=':')
+    except Exception as e:
+        ax_idx.text(0.5, 0.5, f"Erreur de tracé:\n{e}", ha='center', va='center')
+    plt.tight_layout()
+    placeholders['idx'].pyplot(fig_idx)
+    plt.close(fig_idx)
+
+    fig_stack, ax_stack = plt.subplots(figsize=(6, 4))
+    try:
+        num_layers = len(ep_vector)
+        if num_layers > 0:
+            layer_types = ["H" if i % 2 == 0 else "L" for i in range(num_layers)]
+            colors = ['lightblue' if i % 2 == 0 else 'lightcoral' for i in range(num_layers)]
+            bar_pos = np.arange(num_layers)
+            ax_stack.barh(bar_pos, ep_vector, align='center', color=colors, edgecolor='grey')
+            ax_stack.set_yticks(bar_pos); ax_stack.set_yticklabels([f"L{i+1} ({t})" for i, t in enumerate(layer_types)], fontsize=7)
+            ax_stack.invert_yaxis()
+        else:
+            ax_stack.text(0.5, 0.5, "Structure Vide", ha='center', va='center')
+        ax_stack.set_xlabel('Épaisseur (nm)')
+        ax_stack.set_title(f"Structure (It. {iter_num})", fontsize=10)
+    except Exception as e:
+        ax_stack.text(0.5, 0.5, f"Erreur de tracé:\n{e}", ha='center', va='center')
+    plt.tight_layout()
+    placeholders['stack'].pyplot(fig_stack)
+    plt.close(fig_stack)
+
 def _run_core_optimization(ep_start_optim: np.ndarray,
                                validated_inputs: Dict, active_targets: List[Dict],
-                               min_thickness_phys: float, log_prefix: str = ""
+                               min_thickness_phys: float, log_prefix: str = "",
+                               progress_placeholders: Optional[Dict] = None,
+                               update_frequency: int = 20
                                ) -> Tuple[Optional[np.ndarray], bool, float, List[str], str]:
     logs = []
     num_layers_start = len(ep_start_optim)
@@ -384,6 +486,22 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
             except Exception as e_wrap:
                 print(f"Error in scipy_obj_grad_wrapper: {e_wrap}")
                 return np.inf, np.zeros_like(ep_vector_np_in, dtype=np.float64)
+        
+        iteration_counter = [0]
+        def scipy_callback(xk):
+            iteration_counter[0] += 1
+            if progress_placeholders and (iteration_counter[0] % update_frequency == 0):
+                try:
+                    update_progress_plots(
+                        ep_vector=xk,
+                        validated_inputs=validated_inputs,
+                        active_targets=active_targets,
+                        placeholders=progress_placeholders,
+                        iter_num=iteration_counter[0]
+                    )
+                except Exception as e:
+                    progress_placeholders['status'].warning(f"Failed to update plot at iter {iteration_counter[0]}: {e}")
+
         lbfgsb_bounds = [(min_thickness_phys, None)] * num_layers_start
         options = {'maxiter': maxiter, 'maxfun': maxfun,
                    'disp': False, 
@@ -396,7 +514,8 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
                           method='L-BFGS-B',
                           jac=True,
                           bounds=lbfgsb_bounds,
-                          options=options)
+                          options=options,
+                          callback=scipy_callback if progress_placeholders else None)
         logs.append(f"{log_prefix}L-BFGS-B (JAX grad) finished in {time.time() - opt_start_time:.3f}s.")
         final_cost = result.fun if np.isfinite(result.fun) else np.inf
         result_message_str = result.message.decode('utf-8') if isinstance(result.message, bytes) else str(result.message)
@@ -1094,6 +1213,22 @@ def run_local_optimization_wrapper():
     st.session_state.last_calc_results = {}
     st.session_state.last_mse = None
     clear_optimized_state()
+
+    with main_layout[1]:
+        st.subheader("Progression de l'optimisation")
+        status_placeholder = st.empty()
+        spec_placeholder = st.empty()
+        col1, col2 = st.columns(2)
+        idx_placeholder = col1.empty()
+        stack_placeholder = col2.empty()
+
+        progress_placeholders = {
+            "status": status_placeholder,
+            "spec": spec_placeholder,
+            "idx": idx_placeholder,
+            "stack": stack_placeholder,
+        }
+
     with st.spinner("Local optimization in progress..."):
         try:
             active_targets = validate_targets()
@@ -1132,9 +1267,18 @@ def run_local_optimization_wrapper():
             if ep_start is None:
                 st.error("Failed initial thickness calculation for local optimization.")
                 return
+            
             final_ep, success, final_cost, optim_logs, msg = \
                 _run_core_optimization(ep_start, validated_inputs, active_targets,
-                                         MIN_THICKNESS_PHYS_NM, log_prefix="  [Opt Local] ")
+                                         MIN_THICKNESS_PHYS_NM, log_prefix="  [Opt Local] ",
+                                         progress_placeholders=progress_placeholders,
+                                         update_frequency=st.session_state.update_frequency)
+            
+            status_placeholder.empty()
+            spec_placeholder.empty()
+            idx_placeholder.empty()
+            stack_placeholder.empty()
+
             if success and final_ep is not None:
                 st.session_state.optimized_ep = final_ep.copy()
                 st.session_state.current_ep = final_ep.copy()
@@ -1379,6 +1523,7 @@ if 'init_done' not in st.session_state:
     st.session_state.l0 = 500.0
     st.session_state.l_step = 10.0
     st.session_state.auto_thin_threshold = 1.0
+    st.session_state.update_frequency = 20
     
     st.session_state.targets = [
         {'enabled': True, 'min': 400.0, 'max': 500.0, 'target_min': 1.0, 'target_max': 1.0},
@@ -1486,6 +1631,8 @@ with main_layout[0]:
     st.subheader("Targets (T) & Calculation Parameters")
     st.session_state.l_step = st.number_input("λ Step for MSE Grid (nm)", value=st.session_state.l_step, min_value=0.1, format="%.2f", key="l_step_input_main", on_change=trigger_nominal_recalc, help="Wavelength step for optimization grid points (max 100 points). Plotting uses a finer grid.")
     st.session_state.auto_thin_threshold = st.number_input("Auto Thin Layer Removal Threshold (nm)", value=st.session_state.auto_thin_threshold, min_value=MIN_THICKNESS_PHYS_NM, format="%.3f", key="auto_thin_input_main", help="In Auto mode, layers thinner than this may be removed.")
+    st.session_state.update_frequency = st.number_input("Fréquence de mise à jour (itérations)", min_value=1, value=20, step=5, key="update_freq_input", help="Mettre à jour les graphiques de progression toutes les N itérations pendant l'optimisation.")
+    
     hdr_cols = st.columns([0.5, 1, 1, 1, 1])
     hdrs = ["On", "λmin", "λmax", "Tmin", "Tmax"]
     for c, h in zip(hdr_cols, hdrs): c.caption(h)
