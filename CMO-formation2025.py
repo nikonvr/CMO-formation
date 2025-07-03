@@ -1667,7 +1667,7 @@ if action_to_run:
         run_remove_thin_wrapper()
     elif action_to_run == 'monte_carlo':
         run_monte_carlo_wrapper(random_draws_tab)
-    st.rerun()
+        st.rerun() # Rerun to display the plot from session state
 
 if st.session_state.get('needs_rerun_calc', False):
     params = st.session_state.rerun_calc_params
