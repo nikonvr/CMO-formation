@@ -1272,6 +1272,7 @@ if 'init_done' not in st.session_state:
     st.session_state.l_step = 10.0
     st.session_state.auto_thin_threshold = 1.0
     st.session_state.auto_scale_y = False
+    st.session_state.monte_carlo_std_dev = 2.0
     
     st.session_state.targets = [
         {'enabled': True, 'min': 400.0, 'max': 500.0, 'target_min': 1.0, 'target_max': 1.0},
@@ -1366,7 +1367,7 @@ with main_layout[0]:
         st.session_state.targets[i]['target_max'] = cols[4].number_input(f"Tmax Target {i+1}", value=target.get('target_max', 0.0), min_value=0.0, max_value=1.0, format="%.3f", step=0.01, key=f"target_tmax_{i}_main", label_visibility="collapsed", on_change=trigger_nominal_recalc)
 
 with main_layout[1]: 
-    results_tab, logs_tab = st.tabs(["**Résultats**", "**Logs**"])
+    results_tab, random_draws_tab, logs_tab = st.tabs(["**Résultats**", "**Tirages Aléatoires**", "**Logs**"])
     with results_tab:
         st.subheader("Actions")
         menu_cols = st.columns(6)
@@ -1531,7 +1532,14 @@ with main_layout[1]:
                     plt.tight_layout()
                     st.pyplot(fig_stack)
                     plt.close(fig_stack)
-        
+    
+    with random_draws_tab:
+        st.subheader("Simulation de Monte-Carlo")
+        st.session_state.monte_carlo_std_dev = st.number_input("Écart-type pour l'épaisseur (nm)", min_value=0.0, value=st.session_state.monte_carlo_std_dev, step=0.1, format="%.2f", key="mc_std_dev")
+        if st.button("Lancer la simulation", key="run_mc"):
+            st.session_state.action = 'monte_carlo'
+            st.rerun()
+
     with logs_tab:
         st.subheader("Logs")
         log_text = "\n".join(st.session_state.get('log_messages', ['No logs yet.']))
@@ -1551,6 +1559,7 @@ if action_to_run:
         run_needle_wrapper()
     elif action_to_run == 'remove_thin':
         run_remove_thin_wrapper()
+    # Monte Carlo is handled separately below to draw in its own tab
     st.rerun()
 
 if st.session_state.get('needs_rerun_calc', False):
