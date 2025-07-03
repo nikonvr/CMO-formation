@@ -256,16 +256,16 @@ def calculate_qwot_from_ep(ep_vector: np.ndarray, l0: float,
     else:
         return qwot_multipliers, logs
 
-def calculate_final_mse(res: Dict[str, np.ndarray], active_targets: List[Dict]) -> Tuple[Optional[float], int]:
+def calculate_final_rmse(res: Dict[str, np.ndarray], active_targets: List[Dict]) -> Tuple[Optional[float], int]:
     total_squared_error = 0.0
     total_points_in_targets = 0
-    mse = None
+    rmse = None
     if not active_targets or 'Ts' not in res or res['Ts'] is None or 'l' not in res or res['l'] is None:
-        return mse, total_points_in_targets
+        return rmse, total_points_in_targets
     res_l_np = np.asarray(res['l'])
     res_ts_np = np.asarray(res['Ts'])
     if res_l_np.size == 0 or res_ts_np.size == 0 or res_l_np.size != res_ts_np.size:
-        return mse, total_points_in_targets
+        return rmse, total_points_in_targets
     for target in active_targets:
         try:
             l_min = float(target['min'])
@@ -294,7 +294,8 @@ def calculate_final_mse(res: Dict[str, np.ndarray], active_targets: List[Dict]) 
             total_points_in_targets += len(calculated_Ts_in_zone)
     if total_points_in_targets > 0:
         mse = total_squared_error / total_points_in_targets
-    return mse, total_points_in_targets
+        rmse = np.sqrt(mse)
+    return rmse, total_points_in_targets
 
 @jax.jit
 def calculate_mse_for_optimization_penalized_jax(ep_vector: jnp.ndarray,
@@ -416,7 +417,7 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
             final_ep = np.maximum(final_ep_raw, min_thickness_phys)
             optim_success = True
             log_status = "success" if result.success else "limit reached"
-            logs.append(f"{log_prefix}Optimization finished ({log_status}). Final cost: {final_cost:.3e}, Msg: {result_message_str}")
+            logs.append(f"{log_prefix}Optimization finished ({log_status}). Final cost (MSE): {final_cost:.3e}, Msg: {result_message_str}")
         else:
             optim_success = False
             final_ep = np.maximum(ep_start_optim, min_thickness_phys) 
@@ -761,7 +762,7 @@ def clear_optimized_state():
     st.session_state.is_optimized_state = False
     st.session_state.ep_history = deque(maxlen=5)
     st.session_state.optimized_qwot_str = ""
-    st.session_state.last_mse = None
+    st.session_state.last_rmse = None
 
 def set_optimized_as_nominal_wrapper():
     if not st.session_state.get('is_optimized_state') or st.session_state.get('optimized_ep') is None:
@@ -828,7 +829,7 @@ def undo_remove_wrapper():
 def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force_ep: Optional[np.ndarray] = None):
     calc_type = 'Optimized' if is_optimized_run else 'Nominal'
     st.session_state.last_calc_results = {}
-    st.session_state.last_mse = None
+    st.session_state.last_rmse = None
     with st.spinner(f"{calc_type} calculation in progress..."):
         try:
             active_targets = validate_targets()
@@ -836,7 +837,7 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
                 st.error("Target definition invalid. Check logs and correct.")
                 return
             if not active_targets:
-                st.warning("No active targets. Default lambda range used (400-700nm). MSE calculation will be N/A.")
+                st.warning("No active targets. Default lambda range used (400-700nm). RMSE calculation will be N/A.")
                 l_min_plot, l_max_plot = 400.0, 700.0
             else:
                 l_min_plot, l_max_plot = get_lambda_range_from_targets(active_targets)
@@ -910,20 +911,20 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
                 l_vec_optim_np_display = np.geomspace(l_min_plot, l_max_plot, num_pts_optim_display)
                 l_vec_optim_np_display = l_vec_optim_np_display[(l_vec_optim_np_display > 0) & np.isfinite(l_vec_optim_np_display)]
                 if l_vec_optim_np_display.size > 0:
-                    results_optim_grid, logs_mse_calc = calculate_T_from_ep_jax(
+                    results_optim_grid, logs_rmse_calc = calculate_T_from_ep_jax(
                         ep_to_calculate, nH_mat, nL_mat, nSub_mat, l_vec_optim_np_display
                     )
-                    add_log(logs_mse_calc)
+                    add_log(logs_rmse_calc)
                     if results_optim_grid is not None:
-                        mse_display, num_pts_mse = calculate_final_mse(results_optim_grid, active_targets)
-                        st.session_state.last_mse = mse_display
+                        rmse_display, num_pts_rmse = calculate_final_rmse(results_optim_grid, active_targets)
+                        st.session_state.last_rmse = rmse_display
                         st.session_state.last_calc_results['res_optim_grid'] = results_optim_grid
                     else:
-                        st.session_state.last_mse = None
+                        st.session_state.last_rmse = None
                 else:
-                    st.session_state.last_mse = None
+                    st.session_state.last_rmse = None
             else:
-                st.session_state.last_mse = None
+                st.session_state.last_rmse = None
             st.session_state.is_optimized_state = is_optimized_run
             if not is_optimized_run:
                 clear_optimized_state()
@@ -940,7 +941,7 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
 
 def run_local_optimization_wrapper():
     st.session_state.last_calc_results = {}
-    st.session_state.last_mse = None
+    st.session_state.last_rmse = None
     clear_optimized_state()
 
     with st.spinner("Local optimization in progress..."):
@@ -992,14 +993,14 @@ def run_local_optimization_wrapper():
                 st.session_state.optimized_ep = final_ep.copy()
                 st.session_state.current_ep = final_ep.copy()
                 st.session_state.is_optimized_state = True
-                st.session_state.last_mse = final_cost
+                st.session_state.last_rmse = np.sqrt(final_cost) if final_cost != np.inf else np.inf
                 qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat)
                 add_log(logs_qwot)
                 if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                     st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                 else:
                     st.session_state.optimized_qwot_str = "QWOT N/A"
-                st.success(f"Local optimization finished ({msg}). MSE: {final_cost:.4e}")
+                st.success(f"Local optimization finished ({msg}). RMSE: {st.session_state.last_rmse:.4e}")
                 st.session_state.needs_rerun_calc = True
                 st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Opt Local"}
             else:
@@ -1007,7 +1008,7 @@ def run_local_optimization_wrapper():
                 st.session_state.is_optimized_state = False
                 st.session_state.optimized_ep = None
                 st.session_state.current_ep = ep_start.copy()
-                st.session_state.last_mse = None
+                st.session_state.last_rmse = None
         except (ValueError, RuntimeError, TypeError) as e:
             st.error(f"Error during local optimization: {e}")
             add_log(f"ERROR: {e}")
@@ -1019,7 +1020,7 @@ def run_local_optimization_wrapper():
 
 def run_needle_wrapper():
     st.session_state.last_calc_results = {}
-    st.session_state.last_mse = None
+    st.session_state.last_rmse = None
     with st.spinner("Needle cycle in progress..."):
         try:
             active_targets = validate_targets()
@@ -1084,14 +1085,14 @@ def run_needle_wrapper():
                 st.session_state.optimized_ep = final_ep.copy()
                 st.session_state.current_ep = final_ep.copy()
                 st.session_state.is_optimized_state = True
-                st.session_state.last_mse = final_mse
+                st.session_state.last_rmse = np.sqrt(final_mse) if final_mse != np.inf else np.inf
                 qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat)
                 add_log(logs_qwot)
                 if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                     st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                 else:
                     st.session_state.optimized_qwot_str = "QWOT N/A"
-                st.success(f"Needle cycle finished. Final MSE: {final_mse:.4e}")
+                st.success(f"Needle cycle finished. Final RMSE: {st.session_state.last_rmse:.4e}")
                 st.session_state.needs_rerun_calc = True
                 st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': "Needle Cycle"}
             else:
@@ -1110,7 +1111,7 @@ def run_needle_wrapper():
 
 def run_remove_thin_wrapper():
     st.session_state.last_calc_results = {}
-    st.session_state.last_mse = None
+    st.session_state.last_rmse = None
     ep_start_removal = None
     is_starting_from_optimized = False
     if st.session_state.get('is_optimized_state') and st.session_state.get('optimized_ep') is not None:
@@ -1196,13 +1197,13 @@ def run_remove_thin_wrapper():
                     st.session_state.optimized_ep = final_ep.copy()
                     st.session_state.current_ep = final_ep.copy() 
                     st.session_state.is_optimized_state = True 
-                    st.session_state.last_mse = final_cost
+                    st.session_state.last_rmse = np.sqrt(final_cost) if final_cost != np.inf else np.inf
                     qwots_opt, logs_qwot = calculate_qwot_from_ep(final_ep, validated_inputs['l0'], nH_mat, nL_mat)
                     add_log(logs_qwot)
                     if qwots_opt is not None and not np.any(np.isnan(qwots_opt)):
                         st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_opt])
                     else: st.session_state.optimized_qwot_str = "QWOT N/A"
-                    st.success(f"Removal + Re-optimization finished ({msg}). Final MSE: {final_cost:.4e}")
+                    st.success(f"Removal + Re-optimization finished ({msg}). Final RMSE: {st.session_state.last_rmse:.4e}")
                     st.session_state.needs_rerun_calc = True
                     st.session_state.rerun_calc_params = {'is_optimized_run': True, 'method_name': f"Optimized (Post-Remove)"}
                 else:
@@ -1220,16 +1221,16 @@ def run_remove_thin_wrapper():
                             results_fail_grid, logs_fail = calculate_T_from_ep_jax(ep_after_removal, nH_mat, nL_mat, nSub_mat, l_vec_optim_np_disp)
                             add_log(logs_fail)
                             if results_fail_grid:
-                                mse_fail, _ = calculate_final_mse(results_fail_grid, active_targets)
-                                st.session_state.last_mse = mse_fail
-                            else: st.session_state.last_mse = None
+                                rmse_fail, _ = calculate_final_rmse(results_fail_grid, active_targets)
+                                st.session_state.last_rmse = rmse_fail
+                            else: st.session_state.last_rmse = None
                         qwots_fail, logs_qwot_fail = calculate_qwot_from_ep(ep_after_removal, validated_inputs['l0'], nH_mat, nL_mat)
                         add_log(logs_qwot_fail)
                         if qwots_fail is not None and not np.any(np.isnan(qwots_fail)):
                             st.session_state.optimized_qwot_str = ", ".join([f"{q:.3f}" for q in qwots_fail])
                         else: st.session_state.optimized_qwot_str = "QWOT N/A (ReOpt Fail)"
                     except Exception as e_recalc:
-                        st.session_state.last_mse = None
+                        st.session_state.last_rmse = None
                         st.session_state.optimized_qwot_str = "Recalc Error"
                         add_log(f"ERROR recalculating state after failed re-opt: {e_recalc}")
                     st.session_state.needs_rerun_calc = True
@@ -1262,7 +1263,7 @@ if 'init_done' not in st.session_state:
     st.session_state.optimized_qwot_str = ""
     st.session_state.material_sequence = None
     st.session_state.ep_history = deque(maxlen=5)
-    st.session_state.last_mse = None
+    st.session_state.last_rmse = None
     st.session_state.needs_rerun_calc = False
     st.session_state.rerun_calc_params = {}
     st.session_state.action = None
@@ -1402,9 +1403,10 @@ with main_layout[1]:
             state_desc = "Optimized" if st.session_state.is_optimized_state else "Nominal"
             ep_display = results_data.get('ep_used')
             num_layers_display = len(ep_display) if ep_display is not None else 0
+            
             res_info_cols = st.columns(3)
             res_info_cols[0].caption(f"State: {state_desc} ({num_layers_display} layers)")
-            res_info_cols[1].caption(f"MSE: {st.session_state.last_mse:.4e}" if st.session_state.last_mse is not None else "MSE: N/A")
+            res_info_cols[1].metric(label="RMSE", value=f"{st.session_state.last_rmse:.4e}" if st.session_state.last_rmse is not None else "N/A")
             min_thick_str = "N/A"
             if ep_display is not None and ep_display.size > 0:
                 valid_thick = ep_display[ep_display >= MIN_THICKNESS_PHYS_NM - 1e-9]
@@ -1417,7 +1419,7 @@ with main_layout[1]:
 
             res_fine_plot = results_data.get('res_fine')
             active_targets_plot = validate_targets()
-            mse_plot = st.session_state.last_mse
+            rmse_plot = st.session_state.last_rmse
             method_name_plot = results_data.get('method_name', '')
             res_optim_grid_plot = results_data.get('res_optim_grid')
 
@@ -1459,9 +1461,9 @@ with main_layout[1]:
                     if not st.session_state.get('auto_scale_y', False):
                         ax_spec.set_ylim(-0.05, 1.05)
                     if plotted_target_label or (line_ts is not None): ax_spec.legend(fontsize=8)
-                    if mse_plot is not None and np.isfinite(mse_plot): mse_text = f"MSE = {mse_plot:.3e}"
-                    else: mse_text = "MSE: N/A"
-                    ax_spec.text(0.98, 0.98, mse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
+                    if rmse_plot is not None and np.isfinite(rmse_plot): rmse_text = f"RMSE = {rmse_plot:.3e}"
+                    else: rmse_text = "RMSE: N/A"
+                    ax_spec.text(0.98, 0.98, rmse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
                                      bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
                 except Exception as e_spec:
                     ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
