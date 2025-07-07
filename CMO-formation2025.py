@@ -133,10 +133,10 @@ def calculate_single_wavelength_T_core(l_val: jnp.ndarray, ep_vector_contig: jnp
     return Ts_result
 
 def calculate_T_from_ep_jax(ep_vector: Union[np.ndarray, List[float]],
-                                nH_material: MaterialInputType,
-                                nL_material: MaterialInputType,
-                                nSub_material: MaterialInputType,
-                                l_vec: Union[np.ndarray, List[float]]) -> Tuple[Optional[Dict[str, np.ndarray]], List[str]]:
+                              nH_material: MaterialInputType,
+                              nL_material: MaterialInputType,
+                              nSub_material: MaterialInputType,
+                              l_vec: Union[np.ndarray, List[float]]) -> Tuple[Optional[Dict[str, np.ndarray]], List[str]]:
     logs = []
     l_vec_jnp = jnp.asarray(l_vec, dtype=jnp.float64)
     ep_vector_jnp = jnp.asarray(ep_vector, dtype=jnp.float64)
@@ -174,7 +174,7 @@ def calculate_T_from_ep_jax(ep_vector: Union[np.ndarray, List[float]],
     return {'l': np.array(l_vec_jnp), 'Ts': np.array(Ts_arr_clipped)}, logs
 
 def calculate_initial_ep(emp: Union[List[float], Tuple[float,...]], l0: float,
-                             nH0_material: MaterialInputType, nL0_material: MaterialInputType) -> Tuple[Optional[np.ndarray], List[str]]:
+                           nH0_material: MaterialInputType, nL0_material: MaterialInputType) -> Tuple[Optional[np.ndarray], List[str]]:
     logs = []
     num_layers = len(emp)
     ep_initial = np.zeros(num_layers, dtype=np.float64)
@@ -328,8 +328,8 @@ def calculate_mse_for_optimization_penalized_jax(ep_vector: jnp.ndarray,
         total_squared_error += jnp.sum(masked_sq_error)
         total_points_in_targets += jnp.sum(target_mask)
     mse = jnp.where(total_points_in_targets > 0,
-                      total_squared_error / total_points_in_targets,
-                      jnp.inf)
+                        total_squared_error / total_points_in_targets,
+                        jnp.inf)
     final_cost = mse + penalty_cost
     return jnp.nan_to_num(final_cost, nan=jnp.inf, posinf=jnp.inf)
 
@@ -402,12 +402,12 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
         
         opt_start_time = time.time()
         result = minimize(scipy_obj_grad_wrapper,
-                          ep_start_optim,
-                          args=static_args_for_jax,
-                          method='L-BFGS-B',
-                          jac=True,
-                          bounds=lbfgsb_bounds,
-                          options=options)
+                            ep_start_optim,
+                            args=static_args_for_jax,
+                            method='L-BFGS-B',
+                            jac=True,
+                            bounds=lbfgsb_bounds,
+                            options=options)
         
         final_cost = result.fun if np.isfinite(result.fun) else np.inf
         result_message_str = result.message.decode('utf-8') if isinstance(result.message, bytes) else str(result.message)
@@ -439,8 +439,8 @@ def _run_core_optimization(ep_start_optim: np.ndarray,
     return final_ep, optim_success, final_cost, logs, result_message_str
 
 def _perform_layer_merge_or_removal_only(ep_vector_in: np.ndarray, min_thickness_phys: float,
-                                             log_prefix: str = "", target_layer_index: Optional[int] = None,
-                                             threshold_for_removal: Optional[float] = None) -> Tuple[Optional[np.ndarray], bool, List[str]]:
+                                           log_prefix: str = "", target_layer_index: Optional[int] = None,
+                                           threshold_for_removal: Optional[float] = None) -> Tuple[Optional[np.ndarray], bool, List[str]]:
     current_ep = ep_vector_in.copy()
     logs = []
     num_layers = len(current_ep)
@@ -1523,6 +1523,24 @@ with main_layout[0]:
                 st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (QWOT Cleared)"}
                 st.rerun()
     st.caption(f"Current Nominal Layers: {num_layers_from_qwot}")
+
+    # === BLOC DE CODE AJOUTÉ ===
+    if 'last_calc_results' in st.session_state and st.session_state.last_calc_results:
+        ep_display = st.session_state.last_calc_results.get('ep_used')
+
+        if ep_display is not None and ep_display.size > 0:
+            st.markdown("**Épaisseurs réelles (nm)**")
+            formatted_thicknesses = [f"{t:.1f}" for t in ep_display]
+            
+            # Divise la liste en 3 parties pour l'affichage sur 3 lignes
+            chunks = np.array_split(np.array(formatted_thicknesses), 3)
+            
+            # Affiche chaque partie sur une ligne séparée
+            for chunk in chunks:
+                if chunk.size > 0:
+                    st.code(", ".join(chunk), language='text')
+    # === FIN DU BLOC AJOUTÉ ===
+
     st.subheader("Targets (T) & Calculation Parameters")
     st.session_state.l_step = st.number_input("λ Step for MSE Grid (nm)", value=st.session_state.l_step, min_value=0.1, format="%.2f", key="l_step_input_main", on_change=trigger_nominal_recalc, help="Wavelength step for optimization grid points (max 100 points). Plotting uses a finer grid.")
     st.session_state.auto_thin_threshold = st.number_input("Auto Thin Layer Removal Threshold (nm)", value=st.session_state.auto_thin_threshold, min_value=MIN_THICKNESS_PHYS_NM, format="%.3f", key="auto_thin_input_main", help="In Auto mode, layers thinner than this may be removed.")
@@ -1641,7 +1659,7 @@ with main_layout[1]:
                     if rmse_plot is not None and np.isfinite(rmse_plot): rmse_text = f"RMSE = {rmse_plot:.3e}"
                     else: rmse_text = "RMSE: N/A"
                     ax_spec.text(0.98, 0.98, rmse_text, transform=ax_spec.transAxes, ha='right', va='top', fontsize=9,
-                                     bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
+                                         bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.7))
                 except Exception as e_spec:
                     ax_spec.text(0.5, 0.5, f"Error plotting spectrum:\n{e_spec}", ha='center', va='center', transform=ax_spec.transAxes, color='red')
                 plt.tight_layout(rect=[0, 0, 1, 0.93])
