@@ -1530,7 +1530,7 @@ with main_layout[0]:
 
         if ep_display is not None and ep_display.size > 0:
             st.markdown("**Épaisseurs réelles (nm)**")
-           formatted_thicknesses = [f"{i + 1}. {t:.1f}" for i, t in enumerate(ep_display)]
+            formatted_thicknesses = [f"{i + 1}. {t:.1f}" for i, t in enumerate(ep_display)]
             
             # Divise la liste en 3 parties pour l'affichage sur 3 lignes
             chunks = np.array_split(np.array(formatted_thicknesses), 3)
