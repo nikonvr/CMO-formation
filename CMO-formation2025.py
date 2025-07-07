@@ -1529,8 +1529,8 @@ with main_layout[0]:
         ep_display = st.session_state.last_calc_results.get('ep_used')
 
         if ep_display is not None and ep_display.size > 0:
-            st.markdown("**Épaisseurs réelles (nm)**")
-            formatted_thicknesses = [f"{i + 1}. {t:.1f}" for i, t in enumerate(ep_display)]
+            st.markdown("**Épaisseurs réelles (nm)**", unsafe_allow_html=True)
+            formatted_thicknesses = [f"<span style='color:blue;'>{i + 1}.</span> {t:.1f}" for i, t in enumerate(ep_display)]
             
             # Divise la liste en 3 parties pour l'affichage sur 3 lignes
             chunks = np.array_split(np.array(formatted_thicknesses), 3)
