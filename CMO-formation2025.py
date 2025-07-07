@@ -17,7 +17,7 @@ from collections import deque
 MIN_THICKNESS_PHYS_NM = 0.01
 BASE_NEEDLE_THICKNESS_NM = 0.1
 DEFAULT_NEEDLE_SCAN_STEP_NM = 2.0
-AUTO_NEEDLES_PER_CYCLE = 1 # Changed for single needle cycle
+AUTO_NEEDLES_PER_CYCLE = 1
 AUTO_MAX_CYCLES = 3
 MSE_IMPROVEMENT_TOLERANCE = 1e-9
 MAXITER_HARDCODED = 1000
@@ -831,7 +831,7 @@ def run_calculation_wrapper(is_optimized_run: bool, method_name: str = "", force
     calc_type = 'Optimized' if is_optimized_run else 'Nominal'
     st.session_state.last_calc_results = {}
     st.session_state.last_rmse = None
-    st.session_state.monte_carlo_results = None # Clear previous MC results
+    st.session_state.monte_carlo_results = None
     with st.spinner(f"{calc_type} calculation in progress..."):
         try:
             active_targets = validate_targets()
@@ -1264,7 +1264,6 @@ def run_monte_carlo_wrapper(container):
 
         with st.spinner("Lancement de la simulation Monte-Carlo..."):
             try:
-                # Get base data from the last calculation
                 base_results = st.session_state.last_calc_results
                 ep_base = base_results.get('ep_used')
                 if ep_base is None or ep_base.size == 0:
@@ -1279,7 +1278,6 @@ def run_monte_carlo_wrapper(container):
                 num_draws = 100
                 active_targets = validate_targets()
                 
-                # Pre-calculate n,k arrays
                 nH_arr, _ = _get_nk_array_for_lambda_vec(nH_mat, l_vec)
                 nL_arr, _ = _get_nk_array_for_lambda_vec(nL_mat, l_vec)
                 nSub_arr, _ = _get_nk_array_for_lambda_vec(nSub_mat, l_vec)
@@ -1299,15 +1297,12 @@ def run_monte_carlo_wrapper(container):
 
                 vmap_calculate_T = jax.vmap(get_spectrum_for_one_ep, in_axes=(0, None, None, None, None))
 
-                # Generate all random structures at once
                 noise = np.random.normal(0, std_dev, (num_draws, len(ep_base)))
                 perturbed_eps = ep_base + noise
-                perturbed_eps = np.maximum(perturbed_eps, MIN_THICKNESS_PHYS_NM) # Ensure no negative thickness
+                perturbed_eps = np.maximum(perturbed_eps, MIN_THICKNESS_PHYS_NM)
 
-                # Run all calculations in a single batch call
                 all_ts_results = np.array(vmap_calculate_T(jnp.array(perturbed_eps), nH_arr, nL_arr, nSub_arr, l_vec))
 
-                # Calculate RMSE for each run
                 all_rmses = []
                 if active_targets:
                     for i in range(num_draws):
@@ -1318,7 +1313,6 @@ def run_monte_carlo_wrapper(container):
                 
                 plausible_rmse = np.percentile(all_rmses, 80) if all_rmses else None
 
-                # Calculate confidence interval
                 lower_bound = np.percentile(all_ts_results, 10, axis=0)
                 upper_bound = np.percentile(all_ts_results, 90, axis=0)
                 
@@ -1370,7 +1364,6 @@ def run_tolerance_analysis_wrapper(container):
                 plausible_rmses_abs = []
                 plausible_rmses_rel = []
 
-                # JAX-compatible calculation function
                 @jax.jit
                 def get_spectrum_for_one_ep(ep_vector, nH, nL, nSub, lambdas):
                     ep_vector_jnp = jnp.asarray(ep_vector)
@@ -1389,7 +1382,6 @@ def run_tolerance_analysis_wrapper(container):
                 nL_arr, _ = _get_nk_array_for_lambda_vec(nL_mat, l_vec)
                 nSub_arr, _ = _get_nk_array_for_lambda_vec(nSub_mat, l_vec)
 
-                # Absolute error analysis
                 for std_dev in std_devs_abs:
                     noise = np.random.normal(0, std_dev, (num_draws, len(ep_base)))
                     perturbed_eps = ep_base + noise
@@ -1400,7 +1392,6 @@ def run_tolerance_analysis_wrapper(container):
                     all_rmses = [r for r in all_rmses if r is not None]
                     plausible_rmses_abs.append(np.percentile(all_rmses, 80) if all_rmses else 0)
 
-                # Relative error analysis
                 for std_dev_percent in std_devs_rel:
                     std_dev_values = ep_base * (std_dev_percent / 100.0)
                     noise = np.random.normal(0, 1, (num_draws, len(ep_base))) * std_dev_values
@@ -1412,7 +1403,6 @@ def run_tolerance_analysis_wrapper(container):
                     all_rmses = [r for r in all_rmses if r is not None]
                     plausible_rmses_rel.append(np.percentile(all_rmses, 80) if all_rmses else 0)
 
-                # Store results for plotting
                 st.session_state.tolerance_analysis_results = {
                     'std_devs_abs': std_devs_abs,
                     'plausible_rmses_abs': plausible_rmses_abs,
@@ -1524,22 +1514,15 @@ with main_layout[0]:
                 st.rerun()
     st.caption(f"Current Nominal Layers: {num_layers_from_qwot}")
 
-    # === BLOC DE CODE AJOUTÉ ===
     if 'last_calc_results' in st.session_state and st.session_state.last_calc_results:
         ep_display = st.session_state.last_calc_results.get('ep_used')
-
         if ep_display is not None and ep_display.size > 0:
-            st.markdown("**Épaisseurs réelles (nm)**", unsafe_allow_html=True)
+            st.markdown("**Épaisseurs réelles (nm)**")
             formatted_thicknesses = [f"<span style='color:blue;'>{i + 1}.</span> {t:.1f}" for i, t in enumerate(ep_display)]
-            
-            # Divise la liste en 3 parties pour l'affichage sur 3 lignes
             chunks = np.array_split(np.array(formatted_thicknesses), 3)
-            
-            # Affiche chaque partie sur une ligne séparée
             for chunk in chunks:
                 if chunk.size > 0:
-                    st.code(", ".join(chunk), language='text')
-    # === FIN DU BLOC AJOUTÉ ===
+                    st.markdown(", ".join(chunk), unsafe_allow_html=True)
 
     st.subheader("Targets (T) & Calculation Parameters")
     st.session_state.l_step = st.number_input("λ Step for MSE Grid (nm)", value=st.session_state.l_step, min_value=0.1, format="%.2f", key="l_step_input_main", on_change=trigger_nominal_recalc, help="Wavelength step for optimization grid points (max 100 points). Plotting uses a finer grid.")
@@ -1788,10 +1771,9 @@ with main_layout[1]:
         log_text = "\n".join(st.session_state.get('log_messages', ['No logs yet.']))
         st.code(log_text, language='text')
 
-# --- Action Handling Logic ---
 action_to_run = st.session_state.get('action')
 if action_to_run:
-    st.session_state.action = None # Reset flag
+    st.session_state.action = None
     if action_to_run == 'eval_nom':
         st.session_state.needs_rerun_calc = True
         st.session_state.rerun_calc_params = {'is_optimized_run': False, 'method_name': "Nominal (Evaluated)"}
